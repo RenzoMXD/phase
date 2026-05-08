@@ -2810,6 +2810,11 @@ pub struct GameState {
     pub spells_cast_this_turn_by_player: HashMap<PlayerId, Vec<SpellCastRecord>>,
     #[serde(default)]
     pub players_who_searched_library_this_turn: HashSet<PlayerId>,
+    /// CR 603.4: Typed player-action events performed this turn. This is the
+    /// turn-scoped counterpart to `player_actions_this_way`, preserving repeated
+    /// actions for count-style conditions while reusing `PlayerActionKind`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub player_actions_this_turn: Vec<(PlayerId, PlayerActionKind)>,
     #[serde(default)]
     pub players_attacked_this_step: HashSet<PlayerId>,
     #[serde(default)]
@@ -3287,6 +3292,7 @@ impl GameState {
             spells_cast_this_game: HashMap::new(),
             spells_cast_this_turn_by_player: HashMap::new(),
             players_who_searched_library_this_turn: HashSet::new(),
+            player_actions_this_turn: Vec::new(),
             players_attacked_this_step: HashSet::new(),
             players_attacked_this_turn: HashSet::new(),
             attacking_creatures_this_turn: HashMap::new(),
@@ -3501,6 +3507,7 @@ impl PartialEq for GameState {
             && self.spells_cast_this_turn_by_player == other.spells_cast_this_turn_by_player
             && self.players_who_searched_library_this_turn
                 == other.players_who_searched_library_this_turn
+            && self.player_actions_this_turn == other.player_actions_this_turn
             && self.players_attacked_this_step == other.players_attacked_this_step
             && self.players_attacked_this_turn == other.players_attacked_this_turn
             && self.attacking_creatures_this_turn == other.attacking_creatures_this_turn

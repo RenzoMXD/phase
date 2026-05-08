@@ -20,6 +20,7 @@ use crate::types::ability::{
     StaticCondition, TargetFilter, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::counter::{CounterMatch, CounterType};
+use crate::types::events::PlayerActionKind;
 use crate::types::game_state::DayNight;
 use crate::types::zones::Zone;
 
@@ -1282,6 +1283,7 @@ fn parse_youve_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
             make_quantity_ge(QuantityRef::DescendedThisTurn, 1),
             tag("descended this turn"),
         ),
+        parse_player_action_this_turn_body,
     ))
     .parse(rest)
 }
@@ -1292,11 +1294,23 @@ fn parse_youve_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
 /// These are game-state boolean checks expressible as QuantityComparison.
 fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
-        // Compound: "you gained and lost life this turn" → And([Gained >= 1, Lost >= 1])
-        // Must precede individual verb handlers to avoid partial match on "you gained".
+        // Broad/negated event patterns must precede positive domain parsers.
         parse_compound_verb_condition,
-        // Negated event patterns — must precede positive variants to catch "didn't" prefix.
         parse_you_didnt_this_turn,
+        parse_zone_history_condition,
+        parse_life_history_condition,
+        parse_discard_history_condition,
+        parse_combat_history_condition,
+        parse_player_action_this_turn,
+        parse_spell_history_condition,
+        parse_counter_history_condition,
+        parse_board_state_condition,
+    ))
+    .parse(input)
+}
+
+fn parse_zone_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
         parse_creature_died_this_turn_conditions,
         // "a nonland permanent left the battlefield this turn" (Revolt variant)
         value(
@@ -1322,6 +1336,18 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
                 tag("a creature left the battlefield under your control this turn"),
             )),
         ),
+        value(
+            make_quantity_ge(QuantityRef::DescendedThisTurn, 1),
+            tag("you descended this turn"),
+        ),
+        parse_you_created_token_this_turn,
+        parse_you_sacrificed_this_turn,
+    ))
+    .parse(input)
+}
+
+fn parse_life_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
         // "an opponent lost life this turn"
         value(
             make_quantity_ge(
@@ -1362,6 +1388,14 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
         // players" — resolves via `LifeLostThisTurn { player: AllPlayers {
         // aggregate: Max } }`.
         parse_player_lost_life_this_turn,
+        // "you gained life this turn" / "you gained N or more life this turn"
+        parse_you_gained_life_this_turn,
+    ))
+    .parse(input)
+}
+
+fn parse_discard_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
         // CR 701.9 + CR 603.4: "an opponent discarded a card this turn"
         value(
             make_quantity_ge(
@@ -1377,6 +1411,13 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
                 tag("any opponent discarded a card this turn"),
             )),
         ),
+        parse_you_discarded_card_this_turn,
+    ))
+    .parse(input)
+}
+
+fn parse_combat_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
         // "you attacked this turn" (without "you've" prefix)
         value(
             make_quantity_ge(QuantityRef::AttackedThisTurn, 1),
@@ -1385,13 +1426,12 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
                 tag("you attacked this turn"),
             )),
         ),
-        // "you descended this turn" (without "you've" prefix)
-        value(
-            make_quantity_ge(QuantityRef::DescendedThisTurn, 1),
-            tag("you descended this turn"),
-        ),
-        // "you gained life this turn" / "you gained N or more life this turn"
-        parse_you_gained_life_this_turn,
+    ))
+    .parse(input)
+}
+
+fn parse_spell_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
         parse_you_drew_cards_this_turn,
         parse_opponent_drew_cards_this_turn,
         // "you cast another spell this turn" / "you cast a [type] spell this turn"
@@ -1403,15 +1443,54 @@ fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition
         ),
         // "two or more spells were cast last turn" / "a player cast two or more spells last turn"
         parse_spells_cast_last_turn,
-        // "you put a counter on a permanent this turn"
-        parse_counter_added_this_turn,
-        // "no creatures are on the battlefield"
-        parse_no_on_battlefield,
+        parse_you_cast_both_spell_kinds_this_turn,
     ))
-    .or(parse_you_cast_both_spell_kinds_this_turn)
-    .or(parse_you_created_token_this_turn)
-    .or(parse_you_discarded_card_this_turn)
-    .or(parse_you_sacrificed_this_turn)
+    .parse(input)
+}
+
+fn parse_counter_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    // "you put a counter on a permanent this turn"
+    parse_counter_added_this_turn(input)
+}
+
+fn parse_board_state_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    // "no creatures are on the battlefield"
+    parse_no_on_battlefield(input)
+}
+
+fn player_action_this_turn_condition(action: PlayerActionKind) -> StaticCondition {
+    make_quantity_ge(
+        QuantityRef::PlayerActionsThisTurn {
+            player: PlayerScope::Controller,
+            action,
+        },
+        1,
+    )
+}
+
+fn parse_player_action_this_turn_body(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
+        value(
+            player_action_this_turn_condition(PlayerActionKind::Surveil),
+            tag("surveilled this turn"),
+        ),
+        value(
+            player_action_this_turn_condition(PlayerActionKind::Scry),
+            alt((tag("scried this turn"), tag("scryed this turn"))),
+        ),
+        value(
+            player_action_this_turn_condition(PlayerActionKind::CollectEvidence),
+            tag("collected evidence this turn"),
+        ),
+    ))
+    .parse(input)
+}
+
+fn parse_player_action_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    preceded(
+        alt((tag("you "), tag("you've "), tag("you have "))),
+        parse_player_action_this_turn_body,
+    )
     .parse(input)
 }
 
@@ -4711,6 +4790,44 @@ mod tests {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::CardsDiscardedThisTurn {
                         player: PlayerScope::Controller,
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            }
+        );
+    }
+
+    #[test]
+    fn surveilled_this_turn_counts_controller_player_actions() {
+        let (rest, c) = parse_inner_condition("you've surveilled this turn").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::PlayerActionsThisTurn {
+                        player: PlayerScope::Controller,
+                        action: PlayerActionKind::Surveil,
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            }
+        );
+    }
+
+    #[test]
+    fn scried_this_turn_counts_controller_player_actions() {
+        let (rest, c) = parse_inner_condition("you scried this turn").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::PlayerActionsThisTurn {
+                        player: PlayerScope::Controller,
+                        action: PlayerActionKind::Scry,
                     },
                 },
                 comparator: Comparator::GE,

@@ -1523,6 +1523,7 @@ fn detect_duration_this_turn(
         "NthSpellThisTurn",
         "NthDrawThisTurn",
         "CardsDrawnThisTurn",
+        "PlayerActionsThisTurn",
         "OpponentLostLife",
     ];
     if json_has_any(ast_json, markers) {

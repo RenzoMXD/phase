@@ -2339,6 +2339,14 @@ pub enum QuantityRef {
         player: PlayerScope,
         filter: TargetFilter,
     },
+    /// CR 603.4 + CR 701.22/701.25: Count typed player-action events this
+    /// turn, scoped by `player`. Parameterizes "you've surveilled this turn",
+    /// "you've scried this turn", and future action-history conditions without
+    /// adding action-specific sibling quantities.
+    PlayerActionsThisTurn {
+        player: PlayerScope,
+        action: PlayerActionKind,
+    },
     /// CR 309.7: Number of dungeons the controller has completed.
     DungeonsCompleted,
     /// CR 107.3m: The value of X paid for the spell that produced the source

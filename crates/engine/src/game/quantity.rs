@@ -134,6 +134,10 @@ pub(crate) fn quantity_expr_uses_recipient(expr: &QuantityExpr) -> bool {
                 player: PlayerScope::RecipientController,
                 ..
             }
+            | QuantityRef::PlayerActionsThisTurn {
+                player: PlayerScope::RecipientController,
+                ..
+            }
             | QuantityRef::PartySize {
                 player: PlayerScope::RecipientController,
             } => true,
@@ -1378,6 +1382,19 @@ fn resolve_ref(
                 )
             })
         }
+        QuantityRef::PlayerActionsThisTurn { player, action } => {
+            resolve_per_player_scalar(state, *player, controller, ctx, targets, |scoped_player| {
+                usize_to_i32_saturating(
+                    state
+                        .player_actions_this_turn
+                        .iter()
+                        .filter(|(player_id, recorded_action)| {
+                            *player_id == scoped_player.id && recorded_action == action
+                        })
+                        .count(),
+                )
+            })
+        }
         // CR 309.7: Number of dungeons the controller has completed.
         QuantityRef::DungeonsCompleted => state
             .dungeon_progress
@@ -2031,6 +2048,7 @@ mod tests {
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::counter::CounterType;
+    use crate::types::events::PlayerActionKind;
     use crate::types::game_state::{
         ExileLink, ExileLinkKind, ManaSpentSourceSnapshot, ZoneChangeRecord,
     };
@@ -3828,6 +3846,38 @@ mod tests {
             resolve_quantity(&state, &treasure_tokens, PlayerId(0), ObjectId(1)),
             1
         );
+    }
+
+    /// CR 603.4 + CR 701.25: `PlayerActionsThisTurn` counts repeated typed
+    /// player-action events through the same PlayerScope aggregate path as the
+    /// other turn-history quantities.
+    #[test]
+    fn resolve_quantity_player_actions_this_turn_counts_scoped_actions() {
+        let mut state = GameState::new_two_player(42);
+        state
+            .player_actions_this_turn
+            .push((PlayerId(0), PlayerActionKind::Surveil));
+        state
+            .player_actions_this_turn
+            .push((PlayerId(1), PlayerActionKind::Surveil));
+        state
+            .player_actions_this_turn
+            .push((PlayerId(1), PlayerActionKind::Surveil));
+        state
+            .player_actions_this_turn
+            .push((PlayerId(1), PlayerActionKind::Scry));
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::PlayerActionsThisTurn {
+                player: PlayerScope::Opponent {
+                    aggregate: AggregateFunction::Sum,
+                },
+                action: PlayerActionKind::Surveil,
+            },
+        };
+
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 2);
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(1), ObjectId(1)), 1);
     }
 
     #[test]

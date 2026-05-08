@@ -907,6 +907,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
                 fmt_target(filter)
             )
         }
+        QuantityRef::PlayerActionsThisTurn { player, action } => {
+            format!("player actions this turn ({player:?}, {action:?})")
+        }
         QuantityRef::DungeonsCompleted => "dungeons completed".into(),
         QuantityRef::TargetZoneCardCount { .. } => "target zone card count".into(),
         QuantityRef::CostXPaid => "X paid for this spell".into(),
@@ -4639,6 +4642,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::CounterAddedThisTurn { .. } => ("CounterAddedThisTurn", Handled),
         QuantityRef::CardsDiscardedThisTurn { .. } => ("CardsDiscardedThisTurn", Handled),
         QuantityRef::TokensCreatedThisTurn { .. } => ("TokensCreatedThisTurn", Handled),
+        QuantityRef::PlayerActionsThisTurn { .. } => ("PlayerActionsThisTurn", Handled),
         QuantityRef::DungeonsCompleted => ("DungeonsCompleted", Unhandled),
         QuantityRef::TargetZoneCardCount { .. } => ("TargetZoneCardCount", Unhandled),
         QuantityRef::CostXPaid => ("CostXPaid", Handled),

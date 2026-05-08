@@ -1714,6 +1714,7 @@ pub fn resolve_ability_chain(
     for event in &events[events_before..] {
         if let GameEvent::PlayerPerformedAction { player_id, action } = event {
             state.player_actions_this_way.insert((*player_id, *action));
+            state.player_actions_this_turn.push((*player_id, *action));
         }
     }
 
@@ -5137,9 +5138,21 @@ mod tests {
         );
         assert!(
             state
+                .player_actions_this_turn
+                .contains(&(PlayerId(1), action)),
+            "P1 searched and must be recorded in player_actions_this_turn"
+        );
+        assert!(
+            state
                 .player_actions_this_way
                 .contains(&(PlayerId(2), action)),
             "P2 searched and must be recorded in player_actions_this_way"
+        );
+        assert!(
+            state
+                .player_actions_this_turn
+                .contains(&(PlayerId(2), action)),
+            "P2 searched and must be recorded in player_actions_this_turn"
         );
     }
 
