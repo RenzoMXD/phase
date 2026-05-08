@@ -94,11 +94,11 @@ until [[ $SECONDS -ge $deadline ]]; do
     last=$(jq -r '.status.buildHistory[0].finishTime // "none"' <<< "$json")
     err=$(jq -r '.status.buildHistory[0].error // ""' <<< "$json")
     printf '%s status=%s current=%s last=%s\n' "$r" "$st" "$current" "$last"
-    if [[ "$st" == "error" ]]; then
+    if [[ "$st" == "error" && "$current" == "none" ]]; then
       printf '%s error=%s\n' "$r" "$err"
       exit 1
     fi
-    [[ "$st" == "ok" ]] || all_done=0
+    [[ "$st" == "ok" && "$current" == "none" ]] || all_done=0
   done
   [[ $all_done -eq 1 ]] && exit 0
   sleep 20
@@ -110,6 +110,8 @@ exit 124
 **Rules:**
 - After saving files, wait ~10-30s for Tilt to detect changes and rebuild, then check logs.
 - Prefer the `tilt get uiresource` polling loop when waiting on multiple resources; use logs after a resource reports `error` or when you need detailed output.
+- Do not treat `.status.buildHistory[0].error` as actionable while `.status.currentBuild.spanID` is present. Build history may still contain the previous failed run while Tilt is compiling a newer one.
+- Only diagnose/fix a resource error after `updateStatus == "error"` and `currentBuild.spanID == "none"`. `pending` with no current span usually means the resource is queued behind another resource or cargo lock; wait instead of starting manual cargo commands.
 - Use `--follow` only when you need to stream live output (e.g., waiting for a build in progress).
 - Use `--since` to limit output — don't dump entire build history.
 - If a resource shows errors, fix your code and Tilt will automatically rebuild.
