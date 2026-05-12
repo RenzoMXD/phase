@@ -5074,6 +5074,49 @@ mod myriad_runtime_tests {
     }
 
     #[test]
+    fn myriad_uses_attack_event_defending_player_after_source_removed_from_combat() {
+        let face = myriad_creature_face("Detached Myriad Bear", 1);
+        let (mut state, attacker_id) = setup_attack_state(3, &face);
+
+        declare_attack(&mut state, attacker_id, PlayerId(1));
+        assert_eq!(state.stack.len(), 1, "Myriad attack trigger goes on stack");
+
+        crate::game::effects::remove_from_combat::remove_object_from_combat(
+            &mut state,
+            attacker_id,
+        );
+        assert!(
+            state.combat.as_ref().is_some_and(|combat| combat
+                .attackers
+                .iter()
+                .all(|attacker| attacker.object_id != attacker_id)),
+            "source was removed from live combat before Myriad resolved"
+        );
+
+        resolve_myriad_trigger(&mut state);
+
+        let tokens = myriad_tokens(&state, &face.name);
+        assert_eq!(
+            tokens.len(),
+            1,
+            "Myriad must use the attack event's defending player LKI"
+        );
+        let token_attacker = state
+            .combat
+            .as_ref()
+            .unwrap()
+            .attackers
+            .iter()
+            .find(|attacker| attacker.object_id == tokens[0])
+            .expect("Myriad token is attacking");
+        assert_eq!(token_attacker.defending_player, PlayerId(2));
+        assert_eq!(
+            token_attacker.attack_target,
+            AttackTarget::Player(PlayerId(2))
+        );
+    }
+
+    #[test]
     fn myriad_two_player_attack_creates_no_token() {
         let face = myriad_creature_face("Duke Ulder's Cub", 1);
         let (mut state, attacker_id) = setup_attack_state(2, &face);

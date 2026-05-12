@@ -1219,6 +1219,15 @@ fn ability_with_event_context_targets(
     ability: &ResolvedAbility,
 ) -> ResolvedAbility {
     let mut pending = ability.clone();
+    if matches!(pending.effect, Effect::Myriad) && pending.targets.is_empty() {
+        if let Some(defending_player) = myriad::defending_player_from_attack_event(
+            state.current_trigger_event.as_ref(),
+            pending.source_id,
+        ) {
+            pending.targets.push(TargetRef::Player(defending_player));
+        }
+        return pending;
+    }
     if pending.targets.is_empty() {
         if let Some(filter) = pending.effect.target_filter() {
             if filter.is_context_ref() {

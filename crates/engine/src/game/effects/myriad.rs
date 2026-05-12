@@ -1,17 +1,20 @@
 use crate::game::{combat, players};
 use crate::types::ability::{
     DelayedTriggerCondition, Effect, EffectError, QuantityExpr, ResolvedAbility, TargetFilter,
+    TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{DelayedTrigger, GameState};
+use crate::types::identifiers::ObjectId;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
 /// CR 702.116a: Myriad creates a tapped attacking copy for each opponent
 /// other than the defending player for the source creature. The current engine
-/// chooses the player branch of "that player or a planeswalker they control";
-/// planeswalker redirection can be layered on when that choice UI exists.
+/// supports Myriad's all-or-none "you may" choice and chooses the player
+/// branch of "that player or a planeswalker they control"; per-opponent
+/// declines and planeswalker redirection need a dedicated resolution choice UI.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -21,8 +24,7 @@ pub fn resolve(
         return Err(EffectError::MissingParam("Myriad".to_string()));
     }
 
-    let Some(defending_player) = combat::defending_player_for_attacker(state, ability.source_id)
-    else {
+    let Some(defending_player) = defending_player_for_myriad(state, ability) else {
         events.push(GameEvent::EffectResolved {
             kind: crate::types::ability::EffectKind::Myriad,
             source_id: ability.source_id,
@@ -100,4 +102,45 @@ pub fn resolve(
         source_id: ability.source_id,
     });
     Ok(())
+}
+
+fn defending_player_for_myriad(state: &GameState, ability: &ResolvedAbility) -> Option<PlayerId> {
+    ability
+        .targets
+        .iter()
+        .find_map(|target| match target {
+            TargetRef::Player(player) => Some(*player),
+            TargetRef::Object(_) => None,
+        })
+        .or_else(|| {
+            defending_player_from_attack_event(
+                state.current_trigger_event.as_ref(),
+                ability.source_id,
+            )
+        })
+        .or_else(|| combat::defending_player_for_attacker(state, ability.source_id))
+}
+
+pub(crate) fn defending_player_from_attack_event(
+    event: Option<&GameEvent>,
+    source_id: ObjectId,
+) -> Option<PlayerId> {
+    let GameEvent::AttackersDeclared {
+        attacker_ids,
+        defending_player,
+        attacks,
+        ..
+    } = event?
+    else {
+        return None;
+    };
+
+    attacks
+        .iter()
+        .find_map(|(attacker_id, _)| (*attacker_id == source_id).then_some(*defending_player))
+        .or_else(|| {
+            attacker_ids
+                .contains(&source_id)
+                .then_some(*defending_player)
+        })
 }
