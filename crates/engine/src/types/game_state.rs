@@ -12,6 +12,7 @@ use super::ability::{
     ModalChoice, ResolvedAbility, SearchSelectionConstraint, StaticCondition, TargetFilter,
     TargetRef, TriggerCondition,
 };
+use super::attribution::ObjectAttribution;
 use super::card::CardFace;
 use super::card_type::{CoreType, Supertype};
 use super::counter::CounterType;
@@ -2839,6 +2840,14 @@ pub struct GameState {
     #[serde(default)]
     pub next_continuous_effect_id: u64,
 
+    /// Per-object source-attribution side-table, rebuilt fresh every layers
+    /// pass. Records which continuous effects contributed grants/removals to
+    /// each object so the frontend can display "Flying — from Akroma's
+    /// Memorial" without inferring source by name-diffing. Display metadata
+    /// only — never read by game logic. Empty objects skip serialization.
+    #[serde(default, skip_serializing_if = "im::HashMap::is_empty")]
+    pub attribution: im::HashMap<ObjectId, ObjectAttribution>,
+
     // Day/night tracking
     #[serde(default)]
     pub day_night: Option<DayNight>,
@@ -3436,6 +3445,14 @@ pub struct TransientContinuousEffect {
     pub modifications: Vec<ContinuousModification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<StaticCondition>,
+    /// Snapshot of the originating object's name, captured at construction.
+    /// The originating spell/ability typically moves to a new zone (graveyard,
+    /// stack→exile, etc.) with a new ObjectId per CR 400.7 after resolution,
+    /// so live `state.objects[source_id]` lookup may not return the original
+    /// card. Snapshot is captured here so attribution display ("+3/+3 from
+    /// Giant Growth") survives the source's zone change.
+    #[serde(default)]
+    pub source_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3575,6 +3592,7 @@ impl GameState {
             state_revision: 0,
             transient_continuous_effects: im::Vector::new(),
             next_continuous_effect_id: 1,
+            attribution: im::HashMap::new(),
             day_night: None,
             spells_cast_this_turn: 0,
             spells_cast_last_turn: None,
@@ -3744,6 +3762,18 @@ impl GameState {
         let id = self.next_continuous_effect_id;
         self.next_continuous_effect_id += 1;
         let timestamp = self.next_timestamp();
+        // CR 113.7a + CR 603.10: A triggered ability that creates a transient
+        // continuous effect AFTER its source has left all tracked zones (e.g.,
+        // a leaves-the-battlefield trigger that resolves an "until end of turn"
+        // effect) finds `source_id` orphaned here and serializes empty
+        // `source_name`. Acceptable for v1 — the FE renders "(granted)" as the
+        // documented fallback. Threading the source name through the trigger
+        // queue at trigger-creation time would close this gap; deferred.
+        let source_name = self
+            .objects
+            .get(&source_id)
+            .map(|o| o.name.clone())
+            .unwrap_or_default();
         self.transient_continuous_effects
             .push_back(TransientContinuousEffect {
                 id,
@@ -3754,6 +3784,7 @@ impl GameState {
                 affected,
                 modifications,
                 condition,
+                source_name,
             });
         self.layers_dirty = true;
         id
