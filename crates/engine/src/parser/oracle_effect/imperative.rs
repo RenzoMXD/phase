@@ -1988,11 +1988,34 @@ fn try_parse_choose_from_zone(lower: &str, ctx: &mut ParseContext) -> Option<Cho
         return None;
     }
 
-    let mut filter_text = strip_choose_article(filter_prefix.trim())?.to_string();
-    if !zone_suffix.trim().is_empty() {
-        filter_text.push(' ');
-        filter_text.push_str(zone_suffix.trim());
-    }
+    // The post-zone suffix ("with mana value 3 or greater") is an optional
+    // search-filter restriction. `parse_search_filter`'s suffix dispatch is
+    // strict: an unmodeled clause ("without blitz", "that hasn't been chosen")
+    // emits a `search-filter-suffix unmatched` TargetFallback diagnostic. Probe
+    // the prefix+suffix on a throwaway context first; only fold the suffix into
+    // the real parse when it classifies cleanly. An unmodeled suffix is dropped
+    // (the type filter still parses) rather than surfacing a false regression.
+    let bare_filter_text = strip_choose_article(filter_prefix.trim())?.to_string();
+    let suffix = zone_suffix.trim();
+    let filter_text = if suffix.is_empty() {
+        bare_filter_text
+    } else {
+        let with_suffix = format!("{bare_filter_text} {suffix}");
+        let mut probe = ParseContext::default();
+        super::search::parse_search_filter(&with_suffix, &mut probe);
+        let suffix_classified = !probe.diagnostics.iter().any(|d| {
+            matches!(
+                d,
+                OracleDiagnostic::TargetFallback { context, .. }
+                    if context == "search-filter-suffix unmatched"
+            )
+        });
+        if suffix_classified {
+            with_suffix
+        } else {
+            bare_filter_text
+        }
+    };
 
     let filter = super::search::parse_search_filter(&filter_text, ctx);
     Some(ChooseImperativeAst::FromZone {
@@ -7664,6 +7687,46 @@ mod tests {
             }
             other => panic!("Expected FromZone, got {other:?}"),
         }
+    }
+
+    /// D-09 regression: Riveteers Provocateur's "choose a creature card in your
+    /// hand without blitz" has an unmodeled post-zone restriction ("without
+    /// blitz"). The bare type filter (`Creature`) must still parse, but the
+    /// unparseable suffix must NOT be force-fed to the strict search-filter
+    /// suffix dispatch — doing so emits a `search-filter-suffix unmatched`
+    /// TargetFallback diagnostic, which trips the parser-diagnostic ratchet.
+    #[test]
+    fn parse_choose_creature_card_with_unmodeled_post_zone_suffix_emits_no_diagnostic() {
+        let text = "choose a creature card in your hand without blitz";
+        let lower = text.to_lowercase();
+        let mut ctx = ParseContext::default();
+        let result = parse_choose_ast(text, &lower, &mut ctx);
+        match result {
+            Some(ChooseImperativeAst::FromZone {
+                zones,
+                zone_owner,
+                filter,
+                ..
+            }) => {
+                assert_eq!(zones, vec![Zone::Hand]);
+                assert_eq!(zone_owner, ZoneOwner::Controller);
+                let TargetFilter::Typed(tf) = filter else {
+                    panic!("expected Typed creature filter, got {filter:?}");
+                };
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            }
+            other => panic!("Expected FromZone, got {other:?}"),
+        }
+        assert!(
+            !ctx.diagnostics.iter().any(|d| matches!(
+                d,
+                OracleDiagnostic::TargetFallback { context, .. }
+                    if context == "search-filter-suffix unmatched"
+            )),
+            "unmodeled post-zone suffix must not emit a search-filter-suffix \
+             unmatched diagnostic, got {:?}",
+            ctx.diagnostics
+        );
     }
 
     #[test]
