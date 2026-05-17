@@ -9035,6 +9035,17 @@ mod tests {
     }
 
     #[test]
+    fn mana_spend_restriction_spell_only() {
+        let result = crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+            "spend this mana only to cast spells",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellOnly)
+        );
+    }
+
+    #[test]
     fn mana_spend_restriction_x_cost_only() {
         use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
         use crate::types::ability::ManaSpendRestriction;
@@ -9070,6 +9081,53 @@ mod tests {
             result.map(|(r, _)| r),
             Some(ManaSpendRestriction::SpellTypeOrAbilityActivation(
                 "Colorless Eldrazi".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mana_spend_restriction_singular_source_ability_activation() {
+        let result = crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+            "spend this mana only to cast an artifact spell or activate an ability of an artifact source",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellTypeOrAbilityActivation(
+                "Artifact".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mana_spend_restriction_or_to_activate_source_ability() {
+        let result = crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+            "spend this mana only to cast an assassin spell or to activate an ability of an assassin source",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellTypeOrAbilityActivation(
+                "Assassin".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mana_spend_restriction_bare_activation_or_is_unsupported() {
+        let result = crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+            "spend this mana only to cast an artifact spell or activate an ability",
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn mana_spend_restriction_ally_spell_or_source_activation() {
+        let result = crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+            "spend this mana only to cast an ally spell or activate an ability of an ally source",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellTypeOrAbilityActivation(
+                "Ally".to_string()
             ))
         );
     }

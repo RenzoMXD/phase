@@ -2,9 +2,9 @@ use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::char;
-use nom::combinator::{opt, value};
+use nom::combinator::{all_consuming, opt, rest as nom_rest, value};
 use nom::multi::many1;
-use nom::sequence::{delimited, preceded, terminated};
+use nom::sequence::{delimited, preceded, separated_pair, terminated};
 use nom::Parser;
 
 use crate::parser::oracle_nom::error::OracleResult;
@@ -992,16 +992,58 @@ fn parse_restricted_spell_type_phrase(spell_part: &str) -> Option<String> {
     )
 }
 
-fn split_restricted_spell_and_activation(rest: &str) -> (&str, bool) {
-    match terminated(
-        take_until::<_, _, OracleError<'_>>(" or activate abilities"),
-        tag(" or activate abilities"),
-    )
+fn normalize_restricted_source_phrase(phrase: &str) -> String {
+    phrase
+        .split_whitespace()
+        .map(|word| {
+            let singular = if word != "colorless" && word.len() > 1 && word.ends_with('s') {
+                &word[..word.len() - 1]
+            } else {
+                word
+            };
+            match singular {
+                "and" | "or" => singular.to_string(),
+                _ => super::capitalize(singular),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_activation_source_quality(input: &str) -> OracleResult<'_, String> {
+    let (input, _) = opt(nom_primitives::parse_article).parse(input)?;
+    let (rest, phrase) = alt((
+        terminated(
+            take_until::<_, _, OracleError<'_>>(" source"),
+            alt((tag(" sources"), tag(" source"))),
+        ),
+        nom_rest,
+    ))
+    .parse(input)?;
+    Ok((rest, normalize_restricted_source_phrase(phrase.trim())))
+}
+
+fn split_restricted_spell_and_activation(rest: &str) -> (&str, Option<String>) {
+    all_consuming(alt((
+        separated_pair(
+            take_until::<_, _, OracleError<'_>>(" or activate abilities of "),
+            tag(" or activate abilities of "),
+            parse_activation_source_quality,
+        ),
+        separated_pair(
+            take_until::<_, _, OracleError<'_>>(" or activate an ability of "),
+            tag(" or activate an ability of "),
+            parse_activation_source_quality,
+        ),
+        separated_pair(
+            take_until::<_, _, OracleError<'_>>(" or to activate an ability of "),
+            tag(" or to activate an ability of "),
+            parse_activation_source_quality,
+        ),
+    )))
     .parse(rest)
-    {
-        Ok((_, spell_part)) => (spell_part.trim(), true),
-        Err(_) => (rest.trim(), false),
-    }
+    .map(|(_, (spell_part, source_quality))| (spell_part.trim(), Some(source_quality)))
+    .unwrap_or((rest.trim(), None))
 }
 
 /// Parse a "Spend this mana only to cast..." clause into a `ManaSpendRestriction`.
@@ -1052,6 +1094,15 @@ pub(crate) fn parse_mana_spend_restriction(
     // CR 106.6: Extract "and that spell can't be countered" grant before parsing restriction.
     let (rest, grants) = extract_spell_grants(rest);
     let rest = rest.trim();
+    let rest_lower = rest.to_lowercase();
+    if nom_on_lower(rest, &rest_lower, |i| {
+        value((), all_consuming(tag("spells"))).parse(i)
+    })
+    .is_some()
+    {
+        return Some((ManaSpendRestriction::SpellOnly, grants));
+    }
+
     if matches!(rest, "spells with flashback" | "a spell with flashback") {
         return Some((
             ManaSpendRestriction::SpellWithKeywordKind(KeywordKind::Flashback),
@@ -1087,7 +1138,7 @@ pub(crate) fn parse_mana_spend_restriction(
 
     // CR 106.6: Check for "or activate abilities of [type]" suffix.
     // If present, emit a combined SpellTypeOrAbilityActivation restriction.
-    let (spell_part, has_ability_activation) = split_restricted_spell_and_activation(rest);
+    let (spell_part, activation_source_quality) = split_restricted_spell_and_activation(rest);
 
     if spell_part.contains("of the chosen type") {
         return Some((ManaSpendRestriction::ChosenCreatureType, grants));
@@ -1101,13 +1152,13 @@ pub(crate) fn parse_mana_spend_restriction(
 
     let type_phrase = parse_restricted_spell_type_phrase(spell_part)?;
 
-    if has_ability_activation {
-        Some((
+    match activation_source_quality {
+        Some(source_quality) if source_quality.eq_ignore_ascii_case(&type_phrase) => Some((
             ManaSpendRestriction::SpellTypeOrAbilityActivation(type_phrase),
             grants,
-        ))
-    } else {
-        Some((ManaSpendRestriction::SpellType(type_phrase), grants))
+        )),
+        Some(_) => None,
+        None => Some((ManaSpendRestriction::SpellType(type_phrase), grants)),
     }
 }
 

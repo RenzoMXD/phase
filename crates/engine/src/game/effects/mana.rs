@@ -248,6 +248,7 @@ pub(crate) fn resolve_restrictions(
     templates
         .iter()
         .filter_map(|template| match template {
+            ManaSpendRestriction::SpellOnly => Some(ManaRestriction::OnlyForSpell),
             ManaSpendRestriction::SpellType(t) => {
                 Some(ManaRestriction::OnlyForSpellType(t.clone()))
             }

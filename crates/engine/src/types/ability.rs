@@ -1096,6 +1096,8 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
 /// by reading runtime state (e.g., chosen creature type from the source object).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManaSpendRestriction {
+    /// "Spend this mana only to cast spells."
+    SpellOnly,
     /// "Spend this mana only to cast creature spells."
     SpellType(String),
     /// "Spend this mana only to cast a creature spell of the chosen type."
