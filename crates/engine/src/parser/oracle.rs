@@ -10089,6 +10089,40 @@ mod tests {
     }
 
     #[test]
+    fn each_player_discards_their_hand_binds_count_to_scoped_player() {
+        // #781 Wheel of Fortune: "Each player discards their hand, then draws
+        // seven cards." The "their hand" count must bind to the iterated player
+        // (ScopedPlayer), not the caster (Controller). Pre-fix it parsed to
+        // HandSize{Controller}, so under player_scope iteration only the caster's
+        // (already-emptied) hand size drove every player's discard count and
+        // opponents kept their hands.
+        use crate::parser::oracle_effect::parse_effect_chain;
+        use crate::types::ability::{PlayerFilter, PlayerScope, QuantityExpr, QuantityRef};
+        let def = parse_effect_chain(
+            "Each player discards their hand, then draws seven cards.",
+            crate::types::ability::AbilityKind::Spell,
+        );
+        assert_eq!(
+            def.player_scope,
+            Some(PlayerFilter::All),
+            "player_scope should be All for 'each player'"
+        );
+        let count = match &*def.effect {
+            Effect::Discard { count, .. } => count,
+            other => panic!("expected Discard, got {other:?}"),
+        };
+        assert_eq!(
+            *count,
+            QuantityExpr::Ref {
+                qty: QuantityRef::HandSize {
+                    player: PlayerScope::ScopedPlayer,
+                },
+            },
+            "discard count must bind 'their hand' to ScopedPlayer (#781)"
+        );
+    }
+
+    #[test]
     fn each_opponent_loses_life_produces_player_scope() {
         use crate::parser::oracle_effect::parse_effect_chain;
         use crate::types::ability::PlayerFilter;

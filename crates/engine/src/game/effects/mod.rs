@@ -7756,6 +7756,97 @@ mod tests {
         );
     }
 
+    // Repro for Discord #781 (Wheel of Fortune): "Each player discards their hand,
+    // then draws seven cards." EVERY player must discard their own hand and draw 7
+    // — not just the spell's controller. Mirrors the parsed AST exactly:
+    // Discard{player_scope: All, count: HandSize(Controller)} with a chained
+    // Draw{player_scope: All, count: 7}. If the opponent fails to discard, they
+    // would end with 2 (kept) + 7 (drawn) = 9 cards, not 7.
+    #[test]
+    fn wheel_of_fortune_each_player_discards_hand_then_draws_seven() {
+        let mut state = GameState::new_two_player(42);
+
+        // Each player: 2 cards in hand, 8 in library (enough to draw 7).
+        for i in 0..2 {
+            create_object(
+                &mut state,
+                CardId(100 + i),
+                PlayerId(0),
+                format!("P0 Hand {i}"),
+                Zone::Hand,
+            );
+            create_object(
+                &mut state,
+                CardId(200 + i),
+                PlayerId(1),
+                format!("P1 Hand {i}"),
+                Zone::Hand,
+            );
+        }
+        for i in 0..8 {
+            create_object(
+                &mut state,
+                CardId(300 + i),
+                PlayerId(0),
+                format!("P0 Lib {i}"),
+                Zone::Library,
+            );
+            create_object(
+                &mut state,
+                CardId(400 + i),
+                PlayerId(1),
+                format!("P1 Lib {i}"),
+                Zone::Library,
+            );
+        }
+
+        let mut draw = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 7 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        draw.player_scope = Some(PlayerFilter::All);
+
+        let mut wheel = ResolvedAbility::new(
+            Effect::Discard {
+                // Post-fix AST: "their hand" under an each-player scope binds to
+                // the iterated player (ScopedPlayer), not the caster (#781).
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize {
+                        player: PlayerScope::ScopedPlayer,
+                    },
+                },
+                target: TargetFilter::Controller,
+                random: false,
+                unless_filter: None,
+                filter: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        wheel.player_scope = Some(PlayerFilter::All);
+        wheel.sub_ability = Some(Box::new(draw));
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &wheel, &mut events, 0).unwrap();
+
+        assert_eq!(
+            state.players[0].hand.len(),
+            7,
+            "controller discards their hand then draws 7"
+        );
+        assert_eq!(
+            state.players[1].hand.len(),
+            7,
+            "OPPONENT must also discard their hand then draw 7 (#781)"
+        );
+    }
+
     #[test]
     fn evelyn_chain_exiles_each_players_top_card_with_collection_counter_and_permission() {
         let mut state = GameState::new_two_player(42);
