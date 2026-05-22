@@ -149,9 +149,18 @@ pub fn apply(
     mark_public_state_all_dirty(state);
     sync_waiting_for(state, &result.waiting_for);
     run_auto_pass_loop(state, &mut result);
+    remember_public_reveals(state, &result.events);
     finalize_public_state(state);
     result.log_entries = super::log::resolve_log_entries(&result.events, state);
     Ok(result)
+}
+
+fn remember_public_reveals(state: &mut GameState, events: &[GameEvent]) {
+    for event in events {
+        if let GameEvent::CardsRevealed { card_ids, .. } = event {
+            state.public_revealed_cards.extend(card_ids.iter().copied());
+        }
+    }
 }
 
 /// Engine-level authorization guard. Any *game action* must come from the
@@ -5236,6 +5245,21 @@ mod tests {
                 target: TargetFilter::Controller,
             },
         )
+    }
+
+    #[test]
+    fn cards_revealed_events_are_remembered_publicly() {
+        let mut state = GameState::new_two_player(42);
+        let card_id = ObjectId(42);
+        let events = vec![GameEvent::CardsRevealed {
+            player: PlayerId(1),
+            card_ids: vec![card_id],
+            card_names: vec!["Known Card".to_string()],
+        }];
+
+        remember_public_reveals(&mut state, &events);
+
+        assert!(state.public_revealed_cards.contains(&card_id));
     }
 
     /// Create a DealDamage ability for testing.

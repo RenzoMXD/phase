@@ -30,7 +30,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         .flat_map(|opp| filtered.players[opp.0 as usize].hand.iter().copied())
         .collect();
     for obj_id in opp_hand_ids {
-        if !state.revealed_cards.contains(&obj_id) {
+        if !is_visible_revealed_card(state, obj_id) {
             hide_card(&mut filtered, obj_id);
         }
     }
@@ -430,6 +430,13 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     filtered
 }
 
+fn is_visible_revealed_card(state: &GameState, obj_id: ObjectId) -> bool {
+    state.revealed_cards.contains(&obj_id)
+        || state.objects.get(&obj_id).is_some_and(|obj| {
+            state.public_revealed_cards.contains(&obj_id) && obj.zone != Zone::Library
+        })
+}
+
 fn hide_card(state: &mut GameState, obj_id: ObjectId) {
     if let Some(obj) = state.objects.get_mut(&obj_id) {
         obj.face_down = true;
@@ -557,6 +564,46 @@ mod tests {
         assert_eq!(
             filtered.objects.get(&card_id).map(|obj| obj.name.as_str()),
             Some("Hidden Tutor Target")
+        );
+    }
+
+    #[test]
+    fn public_reveal_memory_keeps_opponent_hand_card_visible() {
+        let mut state = GameState::new_two_player(42);
+        let card_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Known Hand Card".to_string(),
+            Zone::Hand,
+        );
+        state.public_revealed_cards.insert(card_id);
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        assert_eq!(
+            filtered.objects.get(&card_id).map(|obj| obj.name.as_str()),
+            Some("Known Hand Card")
+        );
+    }
+
+    #[test]
+    fn public_reveal_memory_does_not_expose_library_order() {
+        let mut state = GameState::new_two_player(42);
+        let card_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Known Library Card".to_string(),
+            Zone::Library,
+        );
+        state.public_revealed_cards.insert(card_id);
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        assert_eq!(
+            filtered.objects.get(&card_id).map(|obj| obj.name.as_str()),
+            Some("Hidden Card")
         );
     }
 

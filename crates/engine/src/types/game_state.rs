@@ -3816,6 +3816,10 @@ pub struct GameState {
     /// `filter_state_for_player` skips hiding these cards.
     #[serde(default)]
     pub revealed_cards: HashSet<ObjectId>,
+    /// Cards that have been publicly revealed at least once. Unlike
+    /// `revealed_cards`, this is not cleared at the next action boundary.
+    #[serde(default)]
+    pub public_revealed_cards: HashSet<ObjectId>,
 
     // Pending ability continuation after a player choice (Scry/Dig/Surveil,
     // SearchChoice, ChooseFromZoneChoice, replacement-choice, etc.) or after
@@ -4385,6 +4389,7 @@ impl GameState {
             modal_modes_chosen_this_turn: HashSet::new(),
             modal_modes_chosen_this_game: HashSet::new(),
             revealed_cards: HashSet::new(),
+            public_revealed_cards: HashSet::new(),
             pending_continuation: None,
             pending_repeat_iteration: None,
             pending_change_zone_iteration: None,
@@ -4660,6 +4665,8 @@ impl PartialEq for GameState {
             && self.pending_etb_counters == other.pending_etb_counters
             && self.modal_modes_chosen_this_turn == other.modal_modes_chosen_this_turn
             && self.modal_modes_chosen_this_game == other.modal_modes_chosen_this_game
+            && self.revealed_cards == other.revealed_cards
+            && self.public_revealed_cards == other.public_revealed_cards
             && self.pending_continuation == other.pending_continuation
             && self.pending_repeat_iteration == other.pending_repeat_iteration
             && self.pending_change_zone_iteration == other.pending_change_zone_iteration
