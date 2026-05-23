@@ -26159,6 +26159,84 @@ mod tests {
             .unwrap();
     }
 
+    /// CR 608.2c + CR 205.3a: "If it's a [subtype], A. Otherwise, B." — the subtype
+    /// guard must parse to a non-None condition so the existing if/otherwise lowering
+    /// attaches the else-branch. Pre-fix the subtype dropped to `None`, so the
+    /// "Otherwise" became an unconditional `OtherwiseFallback` and the destroy ran
+    /// unconditionally (the drain). Mirror of `coiling_oracle_...` for the subtype arm.
+    #[test]
+    fn if_its_a_subtype_otherwise_attaches_else_branch() {
+        let def = parse_effect_chain(
+            "Choose target creature. If it's a Goblin, destroy it. Otherwise, tap it.",
+            AbilityKind::Spell,
+        );
+        let sub = def
+            .sub_ability
+            .as_deref()
+            .expect("expected conditional destroy sub-ability");
+        let Some(AbilityCondition::TargetMatchesFilter { filter, .. }) = &sub.condition else {
+            panic!(
+                "expected subtype condition on destroy, got {:?}",
+                sub.condition
+            );
+        };
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected Typed subtype filter");
+        };
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Subtype("Goblin".to_string())),
+            "expected Goblin subtype, got {:?}",
+            tf.type_filters
+        );
+        assert!(matches!(*sub.effect, Effect::Destroy { .. }));
+        let else_ab = sub
+            .else_ability
+            .as_deref()
+            .expect("else-branch must attach when the subtype condition parses");
+        assert!(
+            matches!(*else_ab.effect, Effect::Tap { .. }),
+            "expected Tap else-branch, got {:?}",
+            else_ab.effect
+        );
+    }
+
+    /// CR 608.2c + CR 702.1: "If it has [keyword], A. Otherwise, B." — affirmative
+    /// keyword guard parses to FilterProp::WithKeyword and attaches the else-branch.
+    #[test]
+    fn if_it_has_keyword_otherwise_attaches_else_branch() {
+        let def = parse_effect_chain(
+            "Choose target creature. If it has flying, destroy it. Otherwise, tap it.",
+            AbilityKind::Spell,
+        );
+        let sub = def
+            .sub_ability
+            .as_deref()
+            .expect("expected conditional destroy sub-ability");
+        let Some(AbilityCondition::TargetMatchesFilter { filter, .. }) = &sub.condition else {
+            panic!(
+                "expected keyword condition on destroy, got {:?}",
+                sub.condition
+            );
+        };
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected Typed keyword filter");
+        };
+        assert!(
+            tf.properties.contains(&FilterProp::WithKeyword {
+                value: Keyword::Flying
+            }),
+            "expected WithKeyword(Flying), got {:?}",
+            tf.properties
+        );
+        assert!(matches!(*sub.effect, Effect::Destroy { .. }));
+        let else_ab = sub
+            .else_ability
+            .as_deref()
+            .expect("else-branch must attach when the keyword condition parses");
+        assert!(matches!(*else_ab.effect, Effect::Tap { .. }));
+    }
+
     #[test]
     fn nonland_card_type_conditional() {
         let def = parse_effect_chain(
