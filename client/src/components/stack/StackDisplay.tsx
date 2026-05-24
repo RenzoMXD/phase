@@ -181,7 +181,13 @@ export function StackDisplay() {
         animate={{ opacity: 1, x: 0 }}
         exit={{ opacity: 0, x: 60 }}
         transition={{ type: "spring", stiffness: 300, damping: 30 }}
-        className="fixed top-1/2 z-[35] -translate-y-1/2"
+        // `pointer-events-none`: the outer box keeps its full panel width even
+        // when the inner panel is transform-collapsed offscreen, so a
+        // transparent region would otherwise hover over (and swallow clicks
+        // meant for) battlefield objects on the right. Click-through here;
+        // the real interactive surfaces below opt back in with
+        // `pointer-events-auto`.
+        className="pointer-events-none fixed top-1/2 z-[35] -translate-y-1/2"
         style={{
           top: topPosition,
           right: `calc(env(safe-area-inset-right) + ${rightOffsetPx}px + var(--game-right-rail-offset, 0px))`,
@@ -197,7 +203,7 @@ export function StackDisplay() {
             <button
               type="button"
               onClick={() => setIsCollapsed(false)}
-              className="absolute left-0 top-1/2 z-20 flex h-20 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-l-xl rounded-r-md border border-white/10 bg-gray-950/95 text-gray-300 shadow-[0_18px_36px_rgba(0,0,0,0.45)] transition-colors hover:bg-gray-900 hover:text-white"
+              className="pointer-events-auto absolute left-0 top-1/2 z-20 flex h-20 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-l-xl rounded-r-md border border-white/10 bg-gray-950/95 text-gray-300 shadow-[0_18px_36px_rgba(0,0,0,0.45)] transition-colors hover:bg-gray-900 hover:text-white"
               aria-label={t("stack.expandPanel")}
             >
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
@@ -210,7 +216,7 @@ export function StackDisplay() {
             </button>
           )}
 
-          <div className="relative h-full overflow-hidden rounded-2xl border border-white/10 bg-gray-950/88 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-md">
+          <div className="pointer-events-auto relative h-full overflow-hidden rounded-2xl border border-white/10 bg-gray-950/88 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-md">
             <div className="flex h-9 items-center justify-between border-b border-white/10 px-3">
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-400">
