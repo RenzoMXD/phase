@@ -256,6 +256,37 @@ pub fn matches_target_filter(
     )
 }
 
+/// CR 109.5 + CR 400.3: In owner-scoped zones (hand, library, graveyard),
+/// Oracle text still says "your card" even though cards are owned rather than
+/// controlled there. Evaluate the same typed filter with ownership standing in
+/// for controller so control-change LKI on the object cannot exclude its owner.
+pub fn matches_target_filter_in_owner_zone(
+    state: &GameState,
+    object_id: ObjectId,
+    filter: &TargetFilter,
+    ctx: &FilterContext<'_>,
+) -> bool {
+    let Some(obj) = state.objects.get(&object_id) else {
+        return false;
+    };
+    if obj.is_phased_out() {
+        return false;
+    }
+
+    let mut owner_scoped = obj.clone();
+    owner_scoped.controller = owner_scoped.owner;
+    filter_inner_for_object(
+        state,
+        &owner_scoped,
+        object_id,
+        filter,
+        ctx.source_id,
+        ctx.source_controller,
+        ctx.ability,
+        ctx.recipient_id,
+    )
+}
+
 pub fn matches_target_filter_on_battlefield_entry(
     state: &GameState,
     event: &ProposedEvent,
