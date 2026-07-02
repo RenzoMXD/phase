@@ -6,6 +6,8 @@
 //! long tail (token creation, replacement effects, modal/distributed effects)
 //! lands phase by phase.
 
+use std::collections::BTreeSet;
+
 use engine::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, BounceSelection, ChoiceType,
     ContinuousModification, ControllerRef, DamageSource, DelayedTriggerCondition, DigSource,
@@ -2284,13 +2286,6 @@ impl ConcreteColorOrColorlessChoice {
             }
         }
     }
-
-    fn hexproof_filter(self) -> engine::types::keywords::HexproofFilter {
-        match self {
-            Self::Color(color) => engine::types::keywords::HexproofFilter::Color(color),
-            Self::Colorless => engine::types::keywords::HexproofFilter::Quality("colorless".into()),
-        }
-    }
 }
 
 fn try_lower_choose_color_or_colorless_sequence(
@@ -2323,6 +2318,16 @@ fn lower_choose_color_or_colorless_sequence(
         saw_chosen_ref |=
             rewrite_color_or_colorless_choice_refs_in_effects(&mut branch_effects, concrete_choice)
                 > 0;
+        let unresolved_refs = unresolved_chosen_color_refs_in_effects(&branch_effects)?;
+        if !unresolved_refs.is_empty() {
+            return Err(ConversionGap::EnginePrerequisiteMissing {
+                engine_type: "ActionList/ChooseAColorOrColorless",
+                needed_variant: format!(
+                    "full branch lowering for chosen-color refs ({})",
+                    unresolved_refs.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            });
+        }
         branches.push(
             crate::convert::build_ability_chain(AbilityKind::Spell, None, branch_effects)?
                 .description(concrete_choice.description().to_string()),
@@ -2365,6 +2370,54 @@ fn concrete_color_or_colorless_choices(
             .map(ConcreteColorOrColorlessChoice::Color),
     );
     Ok(out)
+}
+
+/// Fail closed after `ChooseAColorOrColorless` branch expansion: once the
+/// choose action is lowered away, no engine "chosen color" sentinel may remain
+/// anywhere in the branch effect tree. We scan the serialized effect graph so
+/// newly introduced chosen-color seams also trip the guard until explicitly
+/// rewritten.
+fn unresolved_chosen_color_refs_in_effects(
+    effects: &[Effect],
+) -> ConvResult<BTreeSet<&'static str>> {
+    let value = serde_json::to_value(effects).map_err(|err| ConversionGap::MalformedIdiom {
+        idiom: "ActionList/ChooseAColorOrColorless",
+        path: String::new(),
+        detail: format!("failed to inspect converted branch effects: {err}"),
+    })?;
+    let mut refs = BTreeSet::new();
+    collect_unresolved_chosen_color_refs_in_value(&value, &mut refs);
+    Ok(refs)
+}
+
+fn collect_unresolved_chosen_color_refs_in_value(
+    value: &serde_json::Value,
+    refs: &mut BTreeSet<&'static str>,
+) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_unresolved_chosen_color_refs_in_value(item, refs);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_unresolved_chosen_color_refs_in_value(item, refs);
+            }
+        }
+        serde_json::Value::String(tag) => {
+            if let Some(unresolved) = match tag.as_str() {
+                "AddChosenColor" => Some("AddChosenColor"),
+                "ChosenColor" => Some("ChosenColor"),
+                "ChosenColorIs" => Some("ChosenColorIs"),
+                "IsChosenColor" => Some("IsChosenColor"),
+                _ => None,
+            } {
+                refs.insert(unresolved);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
 }
 
 fn rewrite_color_or_colorless_choice_refs_in_effects(
@@ -2474,14 +2527,6 @@ fn rewrite_color_or_colorless_choice_refs_in_modification(
             ) => {
                 *keyword = engine::types::keywords::Keyword::Protection(
                     concrete_choice.protection_target(),
-                );
-                1
-            }
-            engine::types::keywords::Keyword::HexproofFrom(
-                engine::types::keywords::HexproofFilter::ChosenColor,
-            ) => {
-                *keyword = engine::types::keywords::Keyword::HexproofFrom(
-                    concrete_choice.hexproof_filter(),
                 );
                 1
             }
@@ -7068,8 +7113,8 @@ mod tests {
     use crate::schema::types::{
         CardInGraveyard, Cards, CardtypeVariable, ChoosableColor, Color, ColorList, Comparison,
         Condition, Cost, CounterType, CreatableToken, CreatureTokenSubtypes, CreatureTokenType,
-        DamageSources, Expiration, LayerEffect, ManaSymbol, PTXValue, Permanent, Permanents,
-        Protectable, ProtectableColor, ReplacementActionWouldEnter, Rule, SubType,
+        DamageSources, Expiration, LayerEffect, ManaProduce, ManaSymbol, PTXValue, Permanent,
+        Permanents, Protectable, ProtectableColor, ReplacementActionWouldEnter, Rule, SubType,
         TokenCopyEffects, TokenFlag, PT,
     };
     use engine::types::ability::{
@@ -7290,6 +7335,29 @@ mod tests {
                 )));
             }
             other => panic!("expected white branch grant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_a_color_or_colorless_strict_fails_unresolved_chosen_color_tail() {
+        let err = convert_list(&Actions::ActionList(vec![
+            Action::ChooseAColorOrColorless(ChoosableColor::AnyColor),
+            Action::AddMana(ManaProduce::ManaOfTheChosenColor),
+        ]))
+        .unwrap_err();
+
+        match err {
+            ConversionGap::EnginePrerequisiteMissing {
+                engine_type,
+                needed_variant,
+            } => {
+                assert_eq!(engine_type, "ActionList/ChooseAColorOrColorless");
+                assert!(
+                    needed_variant.contains("ChosenColor"),
+                    "expected unresolved chosen-color detail, got {needed_variant}"
+                );
+            }
+            other => panic!("expected strict-fail for unresolved chosen color, got {other:?}"),
         }
     }
 
