@@ -2264,6 +2264,17 @@ enum ConcreteColorOrColorlessChoice {
 }
 
 impl ConcreteColorOrColorlessChoice {
+    fn description(self) -> &'static str {
+        match self {
+            Self::Color(ManaColor::White) => "White",
+            Self::Color(ManaColor::Blue) => "Blue",
+            Self::Color(ManaColor::Black) => "Black",
+            Self::Color(ManaColor::Red) => "Red",
+            Self::Color(ManaColor::Green) => "Green",
+            Self::Colorless => "Colorless",
+        }
+    }
+
     fn protection_target(self) -> engine::types::keywords::ProtectionTarget {
         match self {
             Self::Color(color) => engine::types::keywords::ProtectionTarget::Color(color),
@@ -2311,11 +2322,10 @@ fn lower_choose_color_or_colorless_sequence(
         saw_chosen_ref |=
             rewrite_color_or_colorless_choice_refs_in_effects(&mut branch_effects, concrete_choice)
                 > 0;
-        branches.push(crate::convert::build_ability_chain(
-            AbilityKind::Spell,
-            None,
-            branch_effects,
-        )?);
+        branches.push(
+            crate::convert::build_ability_chain(AbilityKind::Spell, None, branch_effects)?
+                .description(concrete_choice.description().to_string()),
+        );
     }
 
     if !saw_chosen_ref {
@@ -7190,6 +7200,11 @@ mod tests {
         assert_eq!(branches.len(), 6, "colorless + five colors");
 
         let colorless_branch = &branches[0];
+        assert_eq!(
+            colorless_branch.description.as_deref(),
+            Some("Colorless"),
+            "branch labels must preserve the concrete color choice for UI prompts"
+        );
         match colorless_branch.effect.as_ref() {
             Effect::GenericEffect {
                 static_abilities, ..
@@ -7216,6 +7231,7 @@ mod tests {
         );
 
         let white_branch = &branches[1];
+        assert_eq!(white_branch.description.as_deref(), Some("White"));
         match white_branch.effect.as_ref() {
             Effect::GenericEffect {
                 static_abilities, ..
