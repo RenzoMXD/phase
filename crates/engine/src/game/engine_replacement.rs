@@ -1231,6 +1231,9 @@ pub(super) fn apply_pending_post_replacement_effect(
         ),
         None => None,
     };
+    if !matches!(waiting_for, Some(WaitingFor::ChooseOneOfBranch { .. })) {
+        state.post_replacement_token_choice_applied = None;
+    }
     state.post_replacement_event_source = None;
     state.post_replacement_event_target = None;
     // CR 614.12a + CR 707.9: When the post-effect pauses on `CopyTargetChoice`,
@@ -2731,6 +2734,147 @@ mod tests {
         assert!(token.card_types.subtypes.iter().any(|s| s == "Soldier"));
         assert_eq!(token.color, vec![ManaColor::White]);
         assert!(token.keywords.contains(&Keyword::Flying));
+    }
+
+    /// CR 614.6 + CR 111.1: A Jinnie Fay-class optional token replacement
+    /// that pauses on `ChooseOneOfBranch` must replace the original token
+    /// event, not create it and then prompt again on the chosen branch's
+    /// substitute token event.
+    #[test]
+    fn create_token_choice_replacement_does_not_reprompt_or_create_original_tokens() {
+        use crate::types::ability::{AbilityDefinition, Effect, PlayerFilter, PtValue};
+        use crate::types::card_type::CoreType;
+        use crate::types::mana::ManaColor;
+        use crate::types::proposed_event::{TokenCharacteristics, TokenSpec};
+
+        let mut state = GameState::new_two_player(42);
+        let replacement_source = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let mut jinnie = GameObject::new(
+            replacement_source,
+            CardId(1001),
+            PlayerId(0),
+            "Jinnie Fay".to_string(),
+            Zone::Battlefield,
+        );
+        let make_branch = |name: &str, types: Vec<&str>, colors: Vec<ManaColor>| {
+            AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Token {
+                    name: name.to_string(),
+                    power: PtValue::Fixed(2),
+                    toughness: PtValue::Fixed(2),
+                    types: types.into_iter().map(str::to_string).collect(),
+                    colors,
+                    keywords: vec![],
+                    tapped: false,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    owner: crate::types::ability::TargetFilter::Controller,
+                    attach_to: None,
+                    enters_attacking: false,
+                    supertypes: vec![],
+                    static_abilities: vec![],
+                    enter_with_counters: vec![],
+                },
+            )
+        };
+        jinnie.replacement_definitions.push(
+            ReplacementDefinition::new(ReplacementEvent::CreateToken)
+                .mode(ReplacementMode::Optional { decline: None })
+                .description("Jinnie Fay".to_string())
+                .execute(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::ChooseOneOf {
+                        chooser: PlayerFilter::Controller,
+                        branches: vec![
+                            make_branch("Cat", vec!["Creature", "Cat"], vec![ManaColor::White]),
+                            make_branch("Dog", vec!["Creature", "Dog"], vec![ManaColor::Green]),
+                        ],
+                    },
+                )),
+        );
+        state.objects.insert(replacement_source, jinnie);
+        state.battlefield.push_back(replacement_source);
+
+        let treasure_spec = TokenSpec {
+            characteristics: TokenCharacteristics {
+                display_name: "Treasure".to_string(),
+                power: None,
+                toughness: None,
+                core_types: vec![CoreType::Artifact],
+                subtypes: vec!["Treasure".to_string()],
+                supertypes: Vec::new(),
+                colors: Vec::new(),
+                keywords: Vec::new(),
+            },
+            script_name: "c_a_treasure".to_string(),
+            static_abilities: Vec::new(),
+            enter_with_counters: Vec::new(),
+            tapped: false,
+            enters_attacking: false,
+            sacrifice_at: None,
+            source_id: replacement_source,
+            controller: PlayerId(0),
+            attach_to: None,
+        };
+        let battlefield_before = state.battlefield.clone();
+
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(treasure_spec),
+            copy: None,
+            enter_tapped: crate::types::proposed_event::EtbTapState::Unspecified,
+            count: 1,
+            applied: std::collections::HashSet::new(),
+        };
+        let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::NeedsChoice(player) = result else {
+            panic!("expected NeedsChoice, got {result:?}");
+        };
+        state.waiting_for = replacement_mod::replacement_choice_waiting_for(player, &state);
+        state.priority_player = player;
+
+        apply_as_current(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("accept token replacement");
+        assert!(
+            matches!(state.waiting_for, WaitingFor::ChooseOneOfBranch { .. }),
+            "accepting the replacement must park on the branch choice, got {:?}",
+            state.waiting_for
+        );
+
+        apply_as_current(&mut state, GameAction::ChooseBranch { index: 1 })
+            .expect("choose dog branch");
+
+        let new_ids: Vec<_> = state
+            .battlefield
+            .iter()
+            .filter(|id| !battlefield_before.contains(id))
+            .copied()
+            .collect();
+        assert_eq!(
+            new_ids.len(),
+            1,
+            "the replacement must create exactly the chosen substitute token"
+        );
+        let token = &state.objects[&new_ids[0]];
+        assert_eq!(token.name, "Dog");
+        assert!(
+            token.card_types.subtypes.iter().any(|s| s == "Dog"),
+            "chosen branch token must be the Dog substitute"
+        );
+        assert!(
+            !token.card_types.subtypes.iter().any(|s| s == "Treasure"),
+            "original Treasure token must not be created when the replacement is accepted"
+        );
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }),
+            "chosen substitute token event must not re-prompt the same replacement"
+        );
+        assert!(
+            state.post_replacement_token_choice_applied.is_none(),
+            "replacement-choice applied seed must be cleared after the chosen branch resolves"
+        );
     }
 
     // ── Zone-qualified clone source (Superior Spider-Man) ──

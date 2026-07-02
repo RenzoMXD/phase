@@ -6009,6 +6009,17 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_replacement_event_target: Option<crate::types::ability::TargetRef>,
 
+    /// CR 614.6 + CR 616.1: When an optional CreateToken replacement defers a
+    /// `ChooseOneOf` post-effect (Jinnie Fay class), the chosen branch's token
+    /// event must inherit the originating event's applied replacement ids so
+    /// the same replacement cannot re-prompt on its own substitute tokens.
+    /// Seeded by the replacement pipeline only for that replacement-choice
+    /// round-trip and consumed by the next token proposal emitted from the
+    /// chosen branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_replacement_token_choice_applied:
+        Option<std::collections::HashSet<crate::types::proposed_event::ReplacementId>>,
+
     /// CR 701.50a + CR 614.5 + CR 616.1f: deferred connive link of a connive
     /// replacement whose leading draw parked a replacement-ordering choice. See
     /// `PendingConniveReentry`. Drained only by
@@ -8010,6 +8021,7 @@ impl GameState {
             post_replacement_source: None,
             post_replacement_event_source: None,
             post_replacement_event_target: None,
+            post_replacement_token_choice_applied: None,
             pending_connive_reentry: None,
             pending_spell_resolution: None,
             pending_mutate_merge: None,
