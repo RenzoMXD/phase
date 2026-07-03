@@ -6828,14 +6828,22 @@ fn continue_replacement_impl(
             state.post_replacement_event_source = None;
             state.post_replacement_event_target = None;
         }
-        state.post_replacement_token_choice_applied = match (&proposed, post_effect.as_deref()) {
-            (ProposedEvent::CreateToken { applied, .. }, Some(def))
-                if is_token_replacement_choice(def) =>
-            {
-                Some(applied.clone())
+        // CR 614.12a + CR 616.1: Seed the inherited replacement-applied set ONLY
+        // when this replacement originates a token-choice continuation (Jinnie
+        // Fay-class `CreateToken -> ChooseOneOf(Token, Token)`). The seed is
+        // owned and cleared by that originating ChooseOneOf's completion (see
+        // effects/choose_one_of.rs), NOT by the replacement pipeline. Any other
+        // replacement running here — including a NESTED one whose continuation
+        // drains while an outer token-choice is still resolving — must NOT touch
+        // the field: clobbering it would let the same token-choice replacement
+        // re-prompt on a later token sub-ability (issue #4886 loop).
+        if let (ProposedEvent::CreateToken { applied, .. }, Some(def)) =
+            (&proposed, post_effect.as_deref())
+        {
+            if is_token_replacement_choice(def) {
+                state.post_replacement_token_choice_applied = Some(applied.clone());
             }
-            _ => None,
-        };
+        }
         state.post_replacement_continuation =
             post_effect.map(PostReplacementContinuation::Template);
 

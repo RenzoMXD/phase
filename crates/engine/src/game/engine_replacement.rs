@@ -1231,9 +1231,15 @@ pub(super) fn apply_pending_post_replacement_effect(
         ),
         None => None,
     };
-    if !matches!(waiting_for, Some(WaitingFor::ChooseOneOfBranch { .. })) {
-        state.post_replacement_token_choice_applied = None;
-    }
+    // NOTE: the inherited token-choice applied seed is intentionally NOT cleared
+    // here. This drain runs for EVERY replacement continuation — including a
+    // nested one that pauses inside an outer token-choice ChooseOneOf (issue
+    // #4886). Clearing here on "waiting_for is not ChooseOneOfBranch" wipes the
+    // outer originating seed when the nested continuation drains, letting the
+    // same token-choice replacement re-prompt on a later token sub-ability. The
+    // seed is owned and cleared by the originating ChooseOneOf's completion
+    // (effects/choose_one_of.rs), which is the only frame that can correctly
+    // detect "the token-choice continuation has fully drained."
     state.post_replacement_event_source = None;
     state.post_replacement_event_target = None;
     // CR 614.12a + CR 707.9: When the post-effect pauses on `CopyTargetChoice`,
@@ -3043,6 +3049,118 @@ mod tests {
         assert!(
             state.post_replacement_token_choice_applied.is_none(),
             "replacement-choice applied seed must clear after the nested branch chain drains"
+        );
+    }
+
+    /// Issue #4886 (HIGH review finding): the inherited token-choice applied
+    /// seed must survive an intervening replacement whose own continuation
+    /// drains mid-branch. Pre-fix, `apply_pending_post_replacement_effect`
+    /// cleared `post_replacement_token_choice_applied` whenever its waiting_for
+    /// was not a `ChooseOneOfBranch`, and `continue_replacement_impl`'s
+    /// `_ => None` arm re-wiped it for every non-token-choice nested
+    /// replacement. Either path let the originating token-choice replacement
+    /// re-prompt on a later token sub-ability (the loop). This test pre-seeds
+    /// the applied set the way the originating token-choice does, drives a
+    /// non-token-choice continuation through the drain, and asserts the seed is
+    /// preserved — pinning the fix at both removal sites.
+    #[test]
+    fn token_choice_applied_seed_survives_intervening_continuation_drain() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect, QuantityExpr};
+        use crate::types::card_type::CoreType;
+        use crate::types::proposed_event::{ReplacementId, TokenCharacteristics, TokenSpec};
+
+        let mut state = GameState::new_two_player(42);
+        let jinnie_source = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let jinnie_rid = ReplacementId {
+            source: jinnie_source,
+            index: 0,
+        };
+        let mut seed = std::collections::HashSet::new();
+        seed.insert(jinnie_rid);
+        // Simulate the originating token-choice continuation being mid-drain:
+        // its applied set is live so substitute-token proposals pre-mark Jinnie.
+        state.post_replacement_token_choice_applied = Some(seed.clone());
+
+        // A non-token-choice continuation — e.g. an Optional accept that draws
+        // a card. Its drain must NOT clear the token-choice seed (pre-fix, the
+        // `if !ChooseOneOfBranch { clear }` arm wiped it here).
+        let draw_continuation = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                target: crate::types::ability::TargetFilter::Controller,
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        );
+        state.post_replacement_continuation = Some(
+            crate::types::ability::PostReplacementContinuation::Template(Box::new(
+                draw_continuation,
+            )),
+        );
+        state.post_replacement_source = Some(jinnie_source);
+
+        let mut events = Vec::new();
+        let waiting_for = apply_pending_post_replacement_effect(
+            &mut state,
+            Some(jinnie_source),
+            None,
+            Some(ReplacementEvent::CreateToken),
+            &mut events,
+        );
+
+        // The draw continuation is not a ChooseOneOf; before the fix this is
+        // exactly the frame that wiped the seed. It must now survive.
+        assert_eq!(
+            state.post_replacement_token_choice_applied,
+            Some(seed),
+            "intervening non-token-choice continuation drain must preserve the originating token-choice applied seed (issue #4886)"
+        );
+        assert!(
+            !matches!(waiting_for, Some(WaitingFor::ChooseOneOfBranch { .. })),
+            "non-token-choice continuation should not surface a branch choice"
+        );
+
+        // A substitute token proposed while the seed is live inherits the
+        // originating id, so the same token-choice replacement cannot match it.
+        let dog_spec = TokenSpec {
+            characteristics: TokenCharacteristics {
+                display_name: "Dog".to_string(),
+                power: Some(2),
+                toughness: Some(2),
+                core_types: vec![CoreType::Creature],
+                subtypes: vec!["Dog".to_string()],
+                supertypes: Vec::new(),
+                colors: vec![crate::types::mana::ManaColor::Green],
+                keywords: Vec::new(),
+            },
+            script_name: "c_a_dog".to_string(),
+            static_abilities: Vec::new(),
+            enter_with_counters: Vec::new(),
+            tapped: false,
+            enters_attacking: false,
+            sacrifice_at: None,
+            source_id: jinnie_source,
+            controller: PlayerId(0),
+            attach_to: None,
+        };
+        let applied = state
+            .post_replacement_token_choice_applied
+            .clone()
+            .unwrap_or_default();
+        let proposed = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(dog_spec),
+            copy: None,
+            enter_tapped: crate::types::proposed_event::EtbTapState::Unspecified,
+            count: 1,
+            applied,
+        };
+        assert!(
+            proposed
+                .applied_set()
+                .iter()
+                .any(|rid| rid.source == jinnie_source),
+            "substitute token proposal must inherit the originating replacement id from the live seed"
         );
     }
 

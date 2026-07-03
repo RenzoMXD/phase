@@ -6013,9 +6013,17 @@ pub struct GameState {
     /// `ChooseOneOf` post-effect (Jinnie Fay class), the chosen branch's token
     /// event must inherit the originating event's applied replacement ids so
     /// the same replacement cannot re-prompt on its own substitute tokens.
-    /// Seeded by the replacement pipeline only for that replacement-choice
-    /// round-trip and cloned onto every token proposal emitted while the
-    /// replacement continuation / paused branch-choice context drains.
+    ///
+    /// Ownership: this seed is OWNED by the originating token-choice
+    /// `ChooseOneOf` continuation. It is seeded exactly once (`replacement.rs`,
+    /// only when a `CreateToken` event is replaced by a token-choice
+    /// continuation — Jinnie Fay-class), read by every token proposal
+    /// (`effects/token.rs`), and cleared only when that originating
+    /// `ChooseOneOf` fully drains back to priority (`effects/choose_one_of.rs`).
+    /// The replacement pipeline NEVER clears it: an intervening nested
+    /// replacement (including one whose own continuation drains mid-branch)
+    /// must not clobber the outer originating seed, or the same token-choice
+    /// replacement re-prompts on a later token sub-ability (issue #4886 loop).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_replacement_token_choice_applied:
         Option<std::collections::HashSet<crate::types::proposed_event::ReplacementId>>,
