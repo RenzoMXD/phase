@@ -2286,6 +2286,13 @@ impl ConcreteColorOrColorlessChoice {
             }
         }
     }
+
+    fn hexproof_filter(self) -> engine::types::keywords::HexproofFilter {
+        match self {
+            Self::Color(color) => engine::types::keywords::HexproofFilter::Color(color),
+            Self::Colorless => engine::types::keywords::HexproofFilter::Quality("colorless".into()),
+        }
+    }
 }
 
 fn try_lower_choose_color_or_colorless_sequence(
@@ -2372,6 +2379,37 @@ fn concrete_color_or_colorless_choices(
     Ok(out)
 }
 
+/// Every engine serde tag that represents a runtime "the chosen color"
+/// reference. Once `ChooseAColorOrColorless` is lowered into concrete
+/// `ChooseOneOf` branches, no sentinel in this catalog may remain anywhere
+/// in the branch effect tree — the choose action that would bind it is gone.
+///
+/// Catalog source (re-run `rg '\bChosenColor\b|AddChosenColor|IsChosenColor|ChosenColorIs' crates/engine/src/types/`):
+/// - `ContinuousModification::AddChosenColor` (`ability.rs:17415`)
+/// - `ProtectionTarget::ChosenColor` / `HexproofFilter::ChosenColor` (`keywords.rs:403,415`)
+/// - `DevotionColors::ChosenColor` / `ManaProduction::ChosenColor { .. }` (`ability.rs:1288,1373`)
+/// - `ColorPredicate::IsChosenColor` (`ability.rs:3140`)
+/// - `ChosenColorIs { .. }` (`ability.rs:5788`)
+///
+/// The scan inspects both serde object **keys** and string **values** so it is
+/// independent of whether the carrying enum is internally tagged
+/// (`{"type":"ChosenColor"}`) or externally tagged (`{"ChosenColor":{..}}`).
+/// `unresolved_chosen_color_scan_is_exhaustive_against_known_engine_variants`
+/// pins the catalog to the engine surface.
+const CHOSEN_COLOR_SENTINELS: &[(&str, &str)] = &[
+    ("AddChosenColor", "AddChosenColor"),
+    ("ChosenColor", "ChosenColor"),
+    ("ChosenColorIs", "ChosenColorIs"),
+    ("IsChosenColor", "IsChosenColor"),
+];
+
+fn classify_chosen_color_sentinel(tag: &str) -> Option<&'static str> {
+    CHOSEN_COLOR_SENTINELS
+        .iter()
+        .find(|(needle, _)| *needle == tag)
+        .map(|(_, unresolved)| *unresolved)
+}
+
 /// Fail closed after `ChooseAColorOrColorless` branch expansion: once the
 /// choose action is lowered away, no engine "chosen color" sentinel may remain
 /// anywhere in the branch effect tree. We scan the serialized effect graph so
@@ -2401,18 +2439,15 @@ fn collect_unresolved_chosen_color_refs_in_value(
             }
         }
         serde_json::Value::Object(map) => {
-            for item in map.values() {
+            for (key, item) in map {
+                if let Some(unresolved) = classify_chosen_color_sentinel(key) {
+                    refs.insert(unresolved);
+                }
                 collect_unresolved_chosen_color_refs_in_value(item, refs);
             }
         }
         serde_json::Value::String(tag) => {
-            if let Some(unresolved) = match tag.as_str() {
-                "AddChosenColor" => Some("AddChosenColor"),
-                "ChosenColor" => Some("ChosenColor"),
-                "ChosenColorIs" => Some("ChosenColorIs"),
-                "IsChosenColor" => Some("IsChosenColor"),
-                _ => None,
-            } {
+            if let Some(unresolved) = classify_chosen_color_sentinel(tag) {
                 refs.insert(unresolved);
             }
         }
@@ -2527,6 +2562,14 @@ fn rewrite_color_or_colorless_choice_refs_in_modification(
             ) => {
                 *keyword = engine::types::keywords::Keyword::Protection(
                     concrete_choice.protection_target(),
+                );
+                1
+            }
+            engine::types::keywords::Keyword::HexproofFrom(
+                engine::types::keywords::HexproofFilter::ChosenColor,
+            ) => {
+                *keyword = engine::types::keywords::Keyword::HexproofFrom(
+                    concrete_choice.hexproof_filter(),
                 );
                 1
             }
@@ -7122,7 +7165,7 @@ mod tests {
         FilterProp, PlayerFilter, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
     };
     use engine::types::card_type::CoreType;
-    use engine::types::keywords::{Keyword, ProtectionTarget};
+    use engine::types::keywords::{HexproofFilter, Keyword, ProtectionTarget};
     use engine::types::mana::ManaColor;
 
     // Issue #4201 follow-up — Turnabout's "choose artifact, creature, or
@@ -7358,6 +7401,116 @@ mod tests {
                 );
             }
             other => panic!("expected strict-fail for unresolved chosen color, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unresolved_chosen_color_scan_catches_sentinels_in_keys_and_values() {
+        // Internally-tagged shape: `{"type": "ChosenColor"}` (the engine
+        // default for unit variants). The pre-fix scan caught this because it
+        // walked string values.
+        let internally_tagged = serde_json::json!({ "type": "ChosenColor" });
+        let mut refs = BTreeSet::new();
+        collect_unresolved_chosen_color_refs_in_value(&internally_tagged, &mut refs);
+        assert!(
+            refs.contains("ChosenColor"),
+            "internally-tagged ChosenColor value must be caught: {refs:?}"
+        );
+
+        // Externally-tagged shape: `{"ChosenColor": { .. }}` — the
+        // representation struct variants (e.g. `ManaProduction::ChosenColor`)
+        // can take. The pre-fix scan missed this because it only walked
+        // `map.values()`, never keys.
+        let externally_tagged = serde_json::json!({ "ChosenColor": { "count": 1 } });
+        let mut refs = BTreeSet::new();
+        collect_unresolved_chosen_color_refs_in_value(&externally_tagged, &mut refs);
+        assert!(
+            refs.contains("ChosenColor"),
+            "externally-tagged ChosenColor key must be caught (struct-variant regression): {refs:?}"
+        );
+
+        // Every catalogued sentinel is caught in both key and value positions.
+        for (tag, unresolved) in CHOSEN_COLOR_SENTINELS {
+            for value in [
+                serde_json::json!({ "type": tag }),
+                serde_json::json!({ *tag: null }),
+            ] {
+                let mut refs = BTreeSet::new();
+                collect_unresolved_chosen_color_refs_in_value(&value, &mut refs);
+                assert!(
+                    refs.contains(*unresolved),
+                    "sentinel `{tag}` must resolve to `{unresolved}`: {refs:?}"
+                );
+            }
+        }
+
+        // Non-chosen-color data passes through untouched.
+        let clean = serde_json::json!({ "type": "DealDamage", "amount": 3 });
+        let mut refs = BTreeSet::new();
+        collect_unresolved_chosen_color_refs_in_value(&clean, &mut refs);
+        assert!(
+            refs.is_empty(),
+            "non-chosen-color data must not trip the scan: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn choose_a_color_or_colorless_lowers_hexproof_from_chosen_color() {
+        // Regression for the HexproofFrom seam: `convert_hexproof_filter` must
+        // accept `TheChosenColor` and the branch rewriter must rewrite it per
+        // concrete branch (previously the arm was unreachable because the
+        // converter rejected TheChosenColor before rewriting could run).
+        let effects = convert_list(&Actions::ActionList(vec![
+            Action::ChooseAColorOrColorless(ChoosableColor::AnyColor),
+            Action::CreatePermanentLayerEffectUntil(
+                Box::new(Permanent::ThisPermanent),
+                vec![LayerEffect::AddAbility(vec![Rule::HexproofFrom(
+                    Protectable::FromColor(ProtectableColor::TheChosenColor),
+                )])],
+                Expiration::UntilEndOfTurn,
+            ),
+        ]))
+        .unwrap();
+
+        let [Effect::ChooseOneOf { branches, .. }] = effects.as_slice() else {
+            panic!("expected single ChooseOneOf effect, got {effects:?}");
+        };
+        assert_eq!(branches.len(), 6, "colorless + five colors");
+
+        let colorless_branch = &branches[0];
+        assert_eq!(
+            colorless_branch.description.as_deref(),
+            Some("Colorless"),
+            "first branch is the colorless choice"
+        );
+        match colorless_branch.effect.as_ref() {
+            Effect::GenericEffect {
+                static_abilities, ..
+            } => {
+                assert!(static_abilities.iter().any(|s| s.modifications.contains(
+                    &ContinuousModification::AddKeyword {
+                        keyword: Keyword::HexproofFrom(HexproofFilter::Quality(
+                            "colorless".to_string(),
+                        )),
+                    }
+                )));
+            }
+            other => panic!("expected colorless hexproof grant, got {other:?}"),
+        }
+
+        let white_branch = &branches[1];
+        assert_eq!(white_branch.description.as_deref(), Some("White"));
+        match white_branch.effect.as_ref() {
+            Effect::GenericEffect {
+                static_abilities, ..
+            } => {
+                assert!(static_abilities.iter().any(|s| s.modifications.contains(
+                    &ContinuousModification::AddKeyword {
+                        keyword: Keyword::HexproofFrom(HexproofFilter::Color(ManaColor::White)),
+                    }
+                )));
+            }
+            other => panic!("expected white hexproof grant, got {other:?}"),
         }
     }
 
