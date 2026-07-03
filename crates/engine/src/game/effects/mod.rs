@@ -678,6 +678,15 @@ pub(crate) fn drain_pending_continuation(state: &mut GameState, events: &mut Vec
         && state.pending_continuation.is_none()
         && state.pending_repeat_iteration.is_none()
     {
+        // CR 614.12a + issue #4886: the originating token-choice applied seed
+        // must outlive every nested choice and every stashed sub-ability
+        // continuation. This is the full-drain point — back at priority with no
+        // pending continuation and no pending repeat — so the originating
+        // token-choice frame and all its stashed continuations have completed.
+        // Clearing earlier (e.g. at ChooseOneOf completion) wipes the seed
+        // before a stashed token sub-ability proposes and re-prompts the same
+        // replacement. Safe here because no ability is still resolving.
+        state.post_replacement_token_choice_applied = None;
         drain_pending_repeat_until(state);
     }
 }
