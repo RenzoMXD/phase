@@ -281,15 +281,20 @@ fn stash_post_replacement_continuation(
 }
 
 fn ability_tree_creates_tokens(def: &AbilityDefinition) -> bool {
-    matches!(&*def.effect, Effect::Token { .. })
-        || def
-            .sub_ability
+    let effect_creates_tokens = match &*def.effect {
+        Effect::Token { .. } => true,
+        Effect::ChooseOneOf { branches, .. } => branches.iter().any(ability_tree_creates_tokens),
+        _ => false,
+    };
+    effect_creates_tokens || {
+        def.sub_ability
             .as_deref()
             .is_some_and(ability_tree_creates_tokens)
-        || def
-            .else_ability
-            .as_deref()
-            .is_some_and(ability_tree_creates_tokens)
+            || def
+                .else_ability
+                .as_deref()
+                .is_some_and(ability_tree_creates_tokens)
+    }
 }
 
 fn is_token_replacement_choice(def: &AbilityDefinition) -> bool {

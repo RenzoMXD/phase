@@ -449,7 +449,7 @@ pub fn resolve(
         count,
         applied: state
             .post_replacement_token_choice_applied
-            .take()
+            .clone()
             .unwrap_or_default(),
     };
 

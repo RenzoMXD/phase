@@ -6014,8 +6014,8 @@ pub struct GameState {
     /// event must inherit the originating event's applied replacement ids so
     /// the same replacement cannot re-prompt on its own substitute tokens.
     /// Seeded by the replacement pipeline only for that replacement-choice
-    /// round-trip and consumed by the next token proposal emitted from the
-    /// chosen branch.
+    /// round-trip and cloned onto every token proposal emitted while the
+    /// replacement continuation / paused branch-choice context drains.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_replacement_token_choice_applied:
         Option<std::collections::HashSet<crate::types::proposed_event::ReplacementId>>,

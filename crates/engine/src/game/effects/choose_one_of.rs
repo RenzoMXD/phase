@@ -157,12 +157,12 @@ pub(crate) fn resolve_branch(
     }
 
     super::resolve_ability_chain(state, &resolved, events, 1)?;
+    resume_pending(state, events);
     if state.post_replacement_token_choice_applied.is_some()
         && matches!(state.waiting_for, WaitingFor::Priority { .. })
     {
         state.post_replacement_token_choice_applied = None;
     }
-    resume_pending(state, events);
     Ok(())
 }
 
