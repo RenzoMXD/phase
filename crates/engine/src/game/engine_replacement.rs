@@ -3360,6 +3360,80 @@ mod tests {
         );
     }
 
+    /// Issue #4886 (MED review finding #4): the originating token-choice applied
+    /// seed must survive a `pending_repeat_until` drain. Pre-fix,
+    /// `drain_pending_continuation` cleared the seed BEFORE calling
+    /// `drain_pending_repeat_until`; that drain re-enters `resolve_ability_chain`
+    /// (effects/mod.rs:721 / :744) and can emit further token proposals, which
+    /// then lost the inherited replacement id and re-prompted the same Jinnie
+    /// replacement. The seed must be treated as part of the originating frame
+    /// and cleared only once the repeat-until continuation has fully drained or
+    /// stopped — i.e. only at true full-drain.
+    #[test]
+    fn token_choice_seed_survives_pending_repeat_until_drain() {
+        use crate::types::ability::{
+            AbilityKind, Effect, QuantityExpr, RepeatContinuation, ResolvedAbility,
+        };
+        use crate::types::game_state::PendingRepeatUntil;
+        use crate::types::proposed_event::ReplacementId;
+
+        let mut state = GameState::new_two_player(42);
+        let jinnie_source = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let jinnie_rid = ReplacementId {
+            source: jinnie_source,
+            index: 0,
+        };
+        let mut seed = std::collections::HashSet::new();
+        seed.insert(jinnie_rid);
+        state.post_replacement_token_choice_applied = Some(seed.clone());
+
+        // A repeat-until ability whose body would propose further tokens if
+        // re-entered. `repeat_until: ControllerChoice` re-prompts after each
+        // iteration, so `drain_pending_repeat_until` parks the engine on
+        // `RepeatDecision` — a non-Priority waiting_for that MUST preserve the
+        // seed (the controller may accept another iteration that proposes a
+        // token carrying the inherited id).
+        let mut repeat_ability = ResolvedAbility::new(
+            Effect::Draw {
+                target: crate::types::ability::TargetFilter::Controller,
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            Vec::new(),
+            jinnie_source,
+            PlayerId(0),
+        );
+        repeat_ability.kind = AbilityKind::Spell;
+        repeat_ability.repeat_until = Some(RepeatContinuation::ControllerChoice);
+        state.pending_repeat_until = Some(PendingRepeatUntil {
+            ability: Box::new(repeat_ability),
+        });
+        // Simulate the moment the review describes: a paused repeat-until
+        // continuation re-entering from priority.
+        state.pending_continuation = None;
+        state.pending_repeat_iteration = None;
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        let mut events = Vec::new();
+        effects::drain_pending_continuation(&mut state, &mut events);
+
+        // The repeat-until re-prompted (RepeatDecision), so the originating
+        // token-choice frame has NOT fully drained. The seed must survive —
+        // pre-fix it was wiped before this drain ran.
+        assert!(
+            matches!(state.waiting_for, WaitingFor::RepeatDecision { .. }),
+            "drain_pending_repeat_until must re-prompt the controller for the repeat decision, got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(
+            state.post_replacement_token_choice_applied,
+            Some(seed),
+            "seed must survive the pending_repeat_until drain (issue #4886 review #4): a repeated iteration may still propose tokens carrying the inherited id"
+        );
+    }
+
     // ── Zone-qualified clone source (Superior Spider-Man) ──
     // CR 707.9 + CR 400.1: `find_copy_targets` scans the zone encoded on the
     // filter's `FilterProp::InZone`. When the filter has no zone property,

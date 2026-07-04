@@ -6015,18 +6015,19 @@ pub struct GameState {
     /// the same replacement cannot re-prompt on its own substitute tokens.
     ///
     /// Ownership: this seed is OWNED by the originating token-choice
-    /// continuation and outlives every nested choice plus every stashed
-    /// sub-ability. It is seeded exactly once (`replacement.rs`, only when a
-    /// `CreateToken` event is replaced by a token-choice continuation — Jinnie
-    /// Fay-class), read by every token proposal (`effects/token.rs`), and
-    /// cleared ONLY at true full-drain (`effects/mod.rs::
-    /// drain_pending_continuation`: back at priority with no
-    /// `pending_continuation` and no `pending_repeat_iteration`). The
-    /// replacement pipeline NEVER clears it, and neither does ChooseOneOf
-    /// completion — a branch may stash a token-bearing sub-ability that drains
-    /// only after the choice reports Priority, so clearing at choice
-    /// completion wipes the seed before that sub-ability proposes and
-    /// re-prompts the originating token-choice replacement (issue #4886).
+    /// continuation and outlives every nested choice, every stashed sub-ability
+    /// continuation, AND every repeat/repeat-until drain. It is seeded exactly
+    /// once (`replacement.rs`, only when a `CreateToken` event is replaced by a
+    /// token-choice continuation — Jinnie Fay-class), read by every token
+    /// proposal (`effects/token.rs`), and cleared ONLY at true full-drain
+    /// (`effects/mod.rs::drain_pending_continuation`: back at priority with no
+    /// `pending_continuation`, no `pending_repeat_iteration`, AND no
+    /// `pending_repeat_until`). The replacement pipeline and ChooseOneOf
+    /// completion NEVER clear it — a branch may stash a token-bearing
+    /// sub-ability or pause inside a repeat-until loop that drains only later
+    /// via `resolve_ability_chain`, so clearing earlier wipes the seed before
+    /// those later token proposals and re-prompts the originating token-choice
+    /// replacement (issue #4886).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_replacement_token_choice_applied:
         Option<std::collections::HashSet<crate::types::proposed_event::ReplacementId>>,
