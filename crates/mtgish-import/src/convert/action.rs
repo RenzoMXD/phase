@@ -399,6 +399,9 @@ fn rewrite_bound_x_in_ability_cost(cost: &mut AbilityCost, binding: &QuantityExp
         | AbilityCost::Behold { .. }
         | AbilityCost::NinjutsuFamily { .. }
         | AbilityCost::EffectCost { .. }
+        // CR 118.9: the borrowed keyword cost is read at runtime from the cast
+        // spell's keyword — it carries no X-bound `QuantityExpr` to rewrite.
+        | AbilityCost::KeywordCostOfCastSpell { .. }
         | AbilityCost::Unimplemented { .. } => 0,
     }
 }
@@ -1316,6 +1319,7 @@ fn convert_targeted_distributed(
                     amount,
                     target,
                     damage_source: None,
+                    excess: None,
                 }],
                 multi_target,
                 distribute: DistributionUnit::Damage,
@@ -2842,6 +2846,7 @@ fn spell_deals_multiple_damage_effects(
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: None,
+            excess: None,
         })
     })
 }
@@ -2871,6 +2876,7 @@ fn graveyard_card_deals_multiple_damage_effects(
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: None,
+            excess: None,
         })
     })
 }
@@ -2915,6 +2921,7 @@ fn permanent_deals_damage_effect(
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: None,
+            excess: None,
         }),
         Permanent::Ref_TargetPermanent
         | Permanent::Ref_TargetPermanent1
@@ -2922,6 +2929,7 @@ fn permanent_deals_damage_effect(
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: Some(DamageSource::Target),
+            excess: None,
         }),
         Permanent::ThatEnteringPermanent
         | Permanent::Trigger_ThatArtifact
@@ -2933,6 +2941,7 @@ fn permanent_deals_damage_effect(
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: Some(DamageSource::TriggeringSource),
+            excess: None,
         }),
         other => Err(ConversionGap::EnginePrerequisiteMissing {
             engine_type: "Effect::DealDamage.damage_source",
@@ -3061,6 +3070,7 @@ pub fn convert(a: &Action) -> ConvResult<Effect> {
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: None,
+            excess: None,
         },
         // CR 120.1 + CR 603.7c + CR 603.10a: "When this dies, [it] deals N
         // damage to <recipient>." The damage source is the dying permanent,
@@ -3071,6 +3081,7 @@ pub fn convert(a: &Action) -> ConvResult<Effect> {
             amount: quantity::convert(amount)?,
             target: damage_recipient_to_filter(recipient)?,
             damage_source: None,
+            excess: None,
         },
 
         Action::DestroyPermanent(p) => Effect::Destroy {
@@ -4302,7 +4313,7 @@ pub fn convert(a: &Action) -> ConvResult<Effect> {
         // CR 608.2d: choose a creature type — the bounded creature-type
         // registry resolves the option set at runtime.
         Action::ChooseACreatureType => Effect::Choose {
-            choice_type: ChoiceType::CreatureType,
+            choice_type: ChoiceType::creature_type(),
             persist: true,
             selection: engine::types::ability::TargetSelectionMode::Chosen,
         },
@@ -8162,6 +8173,7 @@ mod tests {
             amount,
             target,
             damage_source,
+            excess: _,
         } = effect
         else {
             panic!("expected DealDamage, got {effect:?}");
