@@ -2424,6 +2424,14 @@ pub enum ResolutionCastCost {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mana_spend_permission: Option<ManaSpendPermission>,
     },
+    /// CR 118.9 + CR 702.62a: Cast paying a specific alternative mana cost
+    /// borrowed from a keyword (e.g., The Face of Boe's suspend cost). The
+    /// mana cost is explicit (not `SelfManaCost`) and payment is `Auto` so the
+    /// pool is drained automatically during resolution (the triggering player's
+    /// pool already holds the keyword cost before the trigger resolves). `None`
+    /// from `effective_keyword_mana_cost` aborts before this is constructed
+    /// (see `cast_from_zone::complete_hand_pick_cast_from_zone`).
+    AlternativeMana { cost: crate::types::mana::ManaCost },
 }
 
 /// CR 608.2g: Disposition of a during-resolution card that is not cast.
@@ -7147,6 +7155,24 @@ pub enum AbilityCost {
         target: TargetFilter,
         base: Box<AbilityCost>,
     },
+    /// CR 118.9 + CR 702.62a: Cast a spell paying a mana cost borrowed from a
+    /// keyword on the spell being cast — its `[cost]` (Suspend N—[cost], Sneak,
+    /// Mayhem, Harmonize, Disturb) — in lieu of its mana cost. The Face of Boe:
+    /// "pay its suspend cost rather than its mana cost." Color-preserving and
+    /// per-card: the concrete `ManaCost` is read at cast time via
+    /// `game::keywords::effective_keyword_mana_cost(state, id, keyword)`, which a
+    /// static `Mana { cost }` cannot express. `keyword` is restricted by the
+    /// parser to kinds whose alternative cost is a single `ManaCost`; the reader
+    /// returns `None` for compound-cost kinds (Flashback non-mana, Escape).
+    ///
+    /// Two consumers, selected structurally by the cast clause (CR 608.2g vs
+    /// CR 611.2): a during-resolution caster (The Face of Boe) resolves this into
+    /// the overriding `ExileWithAltCost { cost }` (cast_from_zone.rs / casting.rs);
+    /// a lingering `ExileWithAltAbilityCost` grant resolves it in
+    /// `pay_additional_cost` (casting_costs.rs).
+    KeywordCostOfCastSpell {
+        keyword: crate::types::keywords::KeywordKind,
+    },
     Unimplemented {
         description: String,
     },
@@ -7234,6 +7260,7 @@ impl AbilityCost {
             | AbilityCost::NinjutsuFamily { .. }
             | AbilityCost::EffectCost { .. }
             | AbilityCost::PerCounter { .. }
+            | AbilityCost::KeywordCostOfCastSpell { .. }
             | AbilityCost::Unimplemented { .. } => false,
         }
     }
@@ -7356,6 +7383,9 @@ impl AbilityCost {
             // CR 702.24a: The multiplier doesn't change *what kind* of cost
             // this is, only *how much* — delegate classification to the base.
             AbilityCost::PerCounter { base, .. } => base.categories(),
+            // CR 118.9 + CR 702.62a: the borrowed keyword cost resolves to a
+            // concrete `ManaCost` at cast time, so it is a mana payment.
+            AbilityCost::KeywordCostOfCastSpell { .. } => vec![CostCategory::ManaOnly],
             AbilityCost::Unimplemented { .. } => Vec::new(),
         }
     }
@@ -7416,6 +7446,8 @@ impl AbilityCost {
             | AbilityCost::Waterbend { .. }
             | AbilityCost::NinjutsuFamily { .. }
             | AbilityCost::EffectCost { .. }
+            // CR 118.9: borrowed mana cost — pays mana, never destroys the source.
+            | AbilityCost::KeywordCostOfCastSpell { .. }
             | AbilityCost::Unimplemented { .. } => false,
         }
     }
