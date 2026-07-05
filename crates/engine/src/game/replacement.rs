@@ -297,10 +297,34 @@ fn ability_tree_creates_tokens(def: &AbilityDefinition) -> bool {
     }
 }
 
+// CR 614.12a + issue #4886 (review #6): must classify the WHOLE ability tree,
+// not just the ChooseOneOf's branches — `ability_tree_creates_tokens` already
+// walks `def.sub_ability`/`def.else_ability`, so a token created by a tail
+// chained after the choice (`ChooseOneOf(non-token branches).sub_ability(Token)`)
+// is caught too. A branches-only check (the previous bug) missed that shape
+// entirely, so the tail token was never seeded and could re-prompt the
+// originating replacement.
 fn is_token_replacement_choice(def: &AbilityDefinition) -> bool {
-    matches!(&*def.effect, Effect::ChooseOneOf { branches, .. } if branches
-        .iter()
-        .any(ability_tree_creates_tokens))
+    matches!(&*def.effect, Effect::ChooseOneOf { .. }) && ability_tree_creates_tokens(def)
+}
+
+/// CR 614.12a: Single authority for ABANDONING a live post-replacement
+/// continuation (as opposed to draining it normally via
+/// `apply_pending_post_replacement_effect`, which only clears
+/// `post_replacement_source` itself once the continuation is dispatched).
+/// Every field here is tightly coupled to the continuation's lifetime — a
+/// caller that clears a subset by hand risks stranding a sibling field when a
+/// new one is added later. `post_replacement_token_choice_applied` (issue
+/// #4886, review #6) was missed by the one pre-existing abandonment path
+/// (player elimination mid-resolution, `elimination.rs`) precisely because it
+/// was hand-listed there instead of routed through one function.
+pub(crate) fn abandon_post_replacement_continuation(state: &mut GameState) {
+    state.post_replacement_continuation = None;
+    state.post_replacement_source = None;
+    state.post_replacement_event_source = None;
+    state.post_replacement_event_target = None;
+    state.post_replacement_token_choice_applied = None;
+    state.pending_connive_reentry = None;
 }
 
 pub type ReplacementMatcher = fn(&ProposedEvent, ObjectId, &GameState) -> bool;
