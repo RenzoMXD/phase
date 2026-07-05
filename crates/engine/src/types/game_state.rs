@@ -2279,6 +2279,11 @@ pub enum TargetSelectionConstraint {
     DifferentTargetPlayers,
     /// CR 115.1 + CR 601.2c: Object targets must be controlled by different players.
     DifferentObjectControllers,
+    /// CR 115.1 + CR 601.2c + CR 400.1: Object targets must come from the same
+    /// player-owned zone of the given kind, e.g. "from a single graveyard".
+    SameZoneOwner {
+        zone: Zone,
+    },
     /// CR 202.3 + CR 601.2c: the chosen target set's combined mana value must
     /// satisfy `comparator` against `value`. `value` is a `QuantityExpr` (not
     /// `i32` like `SearchSelectionConstraint::TotalManaValue`) because the bound
@@ -6468,6 +6473,45 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>,
 
+    /// Oracle ids (fallback: object names) of cards whose abilities hit
+    /// `Effect::Unimplemented` at resolution this game. Diagnostics only —
+    /// records *runtime resolution hits*, is game-scoped, and survives zone
+    /// changes. This is distinct from the per-object `unimplemented_mechanics`
+    /// (`game/coverage.rs`), which is a static parse-coverage projection; this
+    /// accumulator is the telemetry `game_summary` surface. Not a duplication.
+    ///
+    /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and
+    /// `loop_fingerprint` (same family as `unbounded_resources`): this is
+    /// diagnostics/annotation state, not rules state for equality. CR 104.4b /
+    /// CR 732.2a loop detection compares two states reached at different times;
+    /// a populated live state must still compare equal to snapshots taken
+    /// before the unimplemented effect resolved, or loop detection yields false
+    /// negatives.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unimplemented_oracle_ids: BTreeSet<String>,
+
+    /// Descriptors (source name + dead stack-entry id) of push-first triggered
+    /// abilities whose in-construction stack entry vanished before mode/target/
+    /// division selection completed, forcing the engine to abandon construction
+    /// (`triggers::abandon_ceased_pending_trigger`). This records recovery from
+    /// an UNIDENTIFIED state-coherence defect: the push-first construction cursor
+    /// (`pending_trigger_entry`) was left dangling by some upstream path, so the
+    /// completion action could not find its entry. Diagnostics only — game-scoped,
+    /// this is the telemetry `game_summary` surface for the (previously
+    /// engine-panicking) recovery. A `Vec`, not a set: the raw occurrence COUNT
+    /// matters — ~6 hits/night in production before the panic was made
+    /// recoverable — so repeated abandons must not be deduplicated away.
+    ///
+    /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and
+    /// `loop_fingerprint` (same family as `unimplemented_oracle_ids` /
+    /// `unbounded_resources`): this is diagnostics/annotation state, not rules
+    /// state for equality. CR 104.4b / CR 732.2a loop detection compares two
+    /// states reached at different times; a populated live state must still
+    /// compare equal to snapshots taken before the abandon, or loop detection
+    /// yields false negatives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_trigger_abandons: Vec<String>,
+
     /// CR 732.2a: per-game runtime gate for the live combo (infinite-loop) detector.
     /// Default `Off` = exact pre-combo-detector behavior. This is the hot-path flag the
     /// detector gates read; it is PROJECTED from the immutable [`MatchConfig::loop_detection`]
@@ -8250,6 +8294,8 @@ impl GameState {
             debug_mode: false,
             debug_permitted: BTreeSet::new(),
             unbounded_resources: BTreeMap::new(),
+            unimplemented_oracle_ids: BTreeSet::new(),
+            pending_trigger_abandons: Vec::new(),
             loop_detection: LoopDetectionMode::Off,
         }
     }
@@ -8866,6 +8912,69 @@ mod tests {
         assert!(
             loop_states_equal_modulo_resources(&a, &b),
             "the PR-0/PR-2 modulo path must exclude unbounded_resources"
+        );
+    }
+
+    /// Loop-equality guard for the telemetry accumulator: `unimplemented_oracle_ids`
+    /// is diagnostics/annotation state, NOT rules state for equality. Two states
+    /// identical except one has recorded an unimplemented-effect hit MUST compare
+    /// EQUAL through the loop comparators. Otherwise a populated live state would
+    /// stop matching the pre-hit ring snapshots and CR 104.4b / CR 732.2a loop
+    /// detection would yield false negatives.
+    ///
+    /// REVERT-PROBE: add `&& self.unimplemented_oracle_ids == other.unimplemented_oracle_ids`
+    /// to the manual `impl PartialEq for GameState` → both assertions below fail.
+    #[test]
+    fn unimplemented_oracle_ids_excluded_from_loop_equality() {
+        let a = GameState::new_two_player(7);
+        let mut b = a.clone();
+        b.unimplemented_oracle_ids
+            .insert("oracle-abc-123".to_string());
+        // Sanity: the populated field really does differ between the two states.
+        assert_ne!(
+            a.unimplemented_oracle_ids, b.unimplemented_oracle_ids,
+            "fixture must actually differ in unimplemented_oracle_ids"
+        );
+
+        assert!(
+            a == b,
+            "manual PartialEq must exclude unimplemented_oracle_ids (diagnostics state)"
+        );
+        assert!(
+            loop_states_equal(&a, &b),
+            "loop_states_equal (CR 104.4b/732.2a) must exclude unimplemented_oracle_ids"
+        );
+    }
+
+    /// Loop-equality guard for the telemetry accumulator: `pending_trigger_abandons`
+    /// is diagnostics/annotation state (same family as `unimplemented_oracle_ids`),
+    /// NOT rules state for equality. Two states identical except one has recorded a
+    /// push-first construction abandon MUST compare EQUAL through the loop
+    /// comparators, or a populated live state would stop matching the pre-abandon
+    /// ring snapshots and CR 104.4b / CR 732.2a loop detection would yield false
+    /// negatives.
+    ///
+    /// REVERT-PROBE: add `&& self.pending_trigger_abandons == other.pending_trigger_abandons`
+    /// to the manual `impl PartialEq for GameState` → both assertions below fail.
+    #[test]
+    fn pending_trigger_abandons_excluded_from_loop_equality() {
+        let a = GameState::new_two_player(7);
+        let mut b = a.clone();
+        b.pending_trigger_abandons
+            .push("Test Source (stack entry 42)".to_string());
+        // Sanity: the populated field really does differ between the two states.
+        assert_ne!(
+            a.pending_trigger_abandons, b.pending_trigger_abandons,
+            "fixture must actually differ in pending_trigger_abandons"
+        );
+
+        assert!(
+            a == b,
+            "manual PartialEq must exclude pending_trigger_abandons (diagnostics state)"
+        );
+        assert!(
+            loop_states_equal(&a, &b),
+            "loop_states_equal (CR 104.4b/732.2a) must exclude pending_trigger_abandons"
         );
     }
 

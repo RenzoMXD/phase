@@ -21,9 +21,10 @@ pub(crate) use lower::{
 // pub(super) re-exports used by sibling submodules via `super::fn_name()`.
 pub(super) use lower::{
     apply_where_x_to_filter, extract_bounded_target_multi_target,
-    extract_exact_target_multi_target, parse_dynamic_counter_suffix_body,
-    parse_multi_target_count_expr, parse_where_x_quantity_expression, strip_exact_target_prefix,
-    strip_optional_target_prefix, try_parse_pump,
+    extract_exact_target_multi_target, extract_optional_target_multi_target,
+    parse_dynamic_counter_suffix_body, parse_multi_target_count_expr,
+    parse_where_x_quantity_expression, strip_exact_target_prefix, strip_optional_target_prefix,
+    try_parse_pump,
 };
 // Test-only re-exports from lower module.
 #[cfg(test)]
@@ -6956,7 +6957,7 @@ fn try_parse_perpetual_become(tp: TextPair) -> Option<Effect> {
 
 /// Digital-only Alchemy: parse the base-P/T "perpetually" form —
 /// self-subject ("[~ / this creature / …] perpetually become(s)/has base power
-/// and toughness N/N"), referenced-object ("the duplicate perpetually has …"),
+/// and toughness N/N"), referenced-object ("the duplicate/it perpetually has …"),
 /// and prior-clause anaphor ("its base power and toughness perpetually
 /// become …") → [`Effect::ApplyPerpetual`] with
 /// [`PerpetualModification::SetBasePowerToughness`] (High Fae Prankster, Three
@@ -7001,6 +7002,29 @@ fn try_parse_perpetual_base_pt(tp: TextPair) -> Option<Effect> {
         });
     }
 
+    // Referenced object: "It perpetually has base power and toughness 1/1."
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("it perpetually ").parse(lower) {
+        let (rest, _) = alt((
+            tag::<_, _, OracleError<'_>>("becomes "),
+            tag::<_, _, OracleError<'_>>("become "),
+            tag::<_, _, OracleError<'_>>("has "),
+            tag::<_, _, OracleError<'_>>("have "),
+        ))
+        .parse(rest)
+        .ok()?;
+        let (rest, _) = tag::<_, _, OracleError<'_>>("base power and toughness ")
+            .parse(rest)
+            .ok()?;
+        let (power, toughness, _) = parse_base_pt_values(rest)?;
+        return Some(Effect::ApplyPerpetual {
+            target: TargetFilter::ParentTarget,
+            modification: crate::types::ability::PerpetualModification::SetBasePowerToughness {
+                power,
+                toughness,
+            },
+        });
+    }
+
     // Prior-clause anaphor: "Its base power and toughness perpetually become 2/2."
     if let Ok((rest, _)) =
         tag::<_, _, OracleError<'_>>("its base power and toughness perpetually ").parse(lower)
@@ -7024,10 +7048,6 @@ fn try_parse_perpetual_base_pt(tp: TextPair) -> Option<Effect> {
     }
 
     // Self-subject: "~ perpetually has base power and toughness 4/1."
-    // Only unambiguous self-subjects. The anaphoric "it " is intentionally
-    // excluded: after a prior object choice it refers to that object, not the
-    // source, so accepting it here would let a referenced-object perpetual clause
-    // parse as supported while mutating the wrong object.
     let after_subject = [
         "~ ",
         "this creature ",
@@ -7084,6 +7104,37 @@ fn try_parse_perpetual_modify_pt(tp: TextPair) -> Option<Effect> {
 
     let lower = tp.lower;
 
+    // Explicit target form: "Target creature perpetually gets -2/-0."
+    // `parse_target` owns the target/filter grammar; this arm only recognizes the
+    // perpetual P/T tail and rejects compound grants so mixed forms stay honest.
+    if peek(tag::<_, _, OracleError<'_>>("target "))
+        .parse(lower)
+        .is_ok()
+    {
+        let (target, after_target) = parse_target(lower);
+        if !matches!(target, TargetFilter::Any) {
+            let (rest, _) = space1::<_, OracleError<'_>>(after_target).ok()?;
+            let (rest, _) = tag::<_, _, OracleError<'_>>("perpetually ")
+                .parse(rest)
+                .ok()?;
+            let (rest, _) = alt((
+                tag::<_, _, OracleError<'_>>("gets "),
+                tag::<_, _, OracleError<'_>>("get "),
+            ))
+            .parse(rest)
+            .ok()?;
+            let (rest, (power_delta, toughness_delta)) =
+                nom_primitives::parse_pt_modifier(rest).ok()?;
+            return tail_done(rest).then_some(Effect::ApplyPerpetual {
+                target,
+                modification: crate::types::ability::PerpetualModification::ModifyPowerToughness {
+                    power_delta,
+                    toughness_delta,
+                },
+            });
+        }
+    }
+
     // Anaphoric back-reference: "that Vehicle perpetually gets +1/+0".
     if let Ok((after_that, _)) = tag::<_, _, OracleError<'_>>("that ").parse(lower) {
         let (rest, _) = take_until::<_, _, OracleError<'_>>("perpetually ")
@@ -7092,6 +7143,25 @@ fn try_parse_perpetual_modify_pt(tp: TextPair) -> Option<Effect> {
         let (rest, _) = tag::<_, _, OracleError<'_>>("perpetually ")
             .parse(rest)
             .ok()?;
+        let (rest, _) = alt((
+            tag::<_, _, OracleError<'_>>("gets "),
+            tag::<_, _, OracleError<'_>>("get "),
+        ))
+        .parse(rest)
+        .ok()?;
+        let (rest, (power_delta, toughness_delta)) =
+            nom_primitives::parse_pt_modifier(rest).ok()?;
+        return tail_done(rest).then_some(Effect::ApplyPerpetual {
+            target: TargetFilter::ParentTarget,
+            modification: crate::types::ability::PerpetualModification::ModifyPowerToughness {
+                power_delta,
+                toughness_delta,
+            },
+        });
+    }
+
+    // Anaphoric back-reference: "it perpetually gets +1/+0".
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("it perpetually ").parse(lower) {
         let (rest, _) = alt((
             tag::<_, _, OracleError<'_>>("gets "),
             tag::<_, _, OracleError<'_>>("get "),
@@ -7151,6 +7221,8 @@ fn try_parse_perpetual_modify_pt(tp: TextPair) -> Option<Effect> {
 /// resolves against:
 /// - the anaphoric `"that <type> perpetually gains ..."` form back-references the
 ///   parent target ([`TargetFilter::ParentTarget`]);
+/// - the anaphoric `"it perpetually gains ..."` form also back-references the
+///   parent target;
 /// - the self forms (`~`, `this creature/artifact/…`) target the source itself
 ///   ([`TargetFilter::Any`], resolved to the source by the perpetual resolver).
 ///
@@ -7165,6 +7237,17 @@ fn parse_perpetual_self_subject(lower: &str) -> Option<(&str, TargetFilter)> {
         let (rest, _) = tag::<_, _, OracleError<'_>>("perpetually ")
             .parse(rest)
             .ok()?;
+        let (rest, _) = alt((
+            tag::<_, _, OracleError<'_>>("gains "),
+            tag::<_, _, OracleError<'_>>("gain "),
+        ))
+        .parse(rest)
+        .ok()?;
+        return Some((rest, TargetFilter::ParentTarget));
+    }
+
+    // Anaphoric back-reference: "it perpetually gains ...".
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("it perpetually ").parse(lower) {
         let (rest, _) = alt((
             tag::<_, _, OracleError<'_>>("gains "),
             tag::<_, _, OracleError<'_>>("gain "),
@@ -11700,7 +11783,8 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
         && triggers::extract_target_filter_from_effect(&clause.effect).is_some()
     {
         clause.multi_target = extract_exact_target_multi_target(text)
-            .or_else(|| extract_bounded_target_multi_target(text));
+            .or_else(|| extract_bounded_target_multi_target(text))
+            .or_else(|| extract_optional_target_multi_target(text));
     }
     if matches!(clause.effect, Effect::DealDamage { .. }) && clause.multi_target.is_none() {
         clause.multi_target = extract_deal_damage_multi_target(text);
@@ -21667,6 +21751,53 @@ pub(crate) fn parse_effect_chain_ir(
             }
         }
 
+        // CR 508.6 + CR 608.2c: Player-SCOPED "does the same" fan-out — "each
+        // opponent[ attacking that player] does the same" replicates the
+        // immediately-preceding sibling effect across a player SET (the
+        // Commander 2017 curse cycle: Curse of Opulence / Vitality / Verbosity
+        // / Disturbance). Unlike the single targeted-opponent form below, the
+        // set is driven by the existing `player_scope` iteration, which rebinds
+        // the acting controller to each iterated player (see `resolve_ability_chain`
+        // in game/effects/mod.rs) — so cloning the antecedent effect and
+        // stamping the recognized scope reuses the SAME machinery as the
+        // explicit-verb riders of this exact cycle ("each opponent attacking
+        // that player gains 2 life"), requiring no new engine variant, resolver,
+        // or scope. Placed before the targeted-opponent form so the scoped
+        // fan-out wins (the two subjects are disjoint: "each …" vs "target …").
+        if let Some(prev_effect) = clauses
+            .iter()
+            .rev()
+            .find(|clause| !clause.absorbed_by_followup)
+            .map(|clause| clause.parsed.effect.clone())
+        {
+            if let Some(scope) = sequence::try_parse_scoped_does_the_same(normalized_text) {
+                clauses.push(ClauseIr {
+                    parsed: parsed_clause(prev_effect),
+                    boundary: chunk.boundary_after,
+                    condition: None,
+                    is_optional: false,
+                    opponent_may_scope: None,
+                    repeat_for: None,
+                    player_scope: Some(scope),
+                    starting_with: None,
+                    delayed_condition: None,
+                    prefix_delayed_condition: None,
+                    intrinsic_continuation: None,
+                    followup_continuation: None,
+                    absorbed_by_followup: false,
+                    multi_target: None,
+                    where_x_expression: None,
+                    is_otherwise: false,
+                    unless_pay: None,
+                    special: None,
+                    source_text: normalized_text.to_string(),
+                    target_selection_mode: TargetSelectionMode::Chosen,
+                    target_chooser: None,
+                });
+                continue;
+            }
+        }
+
         // CR 608.2c + CR 601.2c: "[then] target opponent does the same / does
         // so." — replicate the immediately-preceding sibling effect for a
         // targeted opponent (The Wedding of River Song). A correct runtime needs
@@ -24686,7 +24817,7 @@ pub(super) fn parse_unless_payment(lower: &str) -> Option<AbilityCost> {
     }
     // CR 118.12a: "unless [target's controller] has [~] deal N damage to them"
     // (Molten Influence and other counter spells with damage alternatives).
-    if let Some(cost) = parse_unless_have_deal_damage_cost(after_unless) {
+    if let Some((cost, _)) = parse_unless_have_deal_damage_cost(after_unless) {
         return Some(cost);
     }
     // CR 118.12a + CR 121.3a: "unless its controller has you draw a card"
@@ -24828,15 +24959,33 @@ fn parse_deal_damage_to_them_tail(input: &str) -> Option<()> {
 }
 
 /// CR 118.12a: "unless [that object's|its] controller has [~] deal N damage to
-/// them" (Blazing Salvo, Lava Blister, Molten Influence) — the controller may
-/// take the damage instead of the primary effect.
-fn parse_unless_have_deal_damage_cost(after_unless: &str) -> Option<AbilityCost> {
-    let (rest, _) = alt((
-        tag::<_, _, OracleError<'_>>("that creature's controller has "),
-        tag("its controller has "),
-        tag("that permanent's controller has "),
-        tag("that land's controller has "),
-        tag("that spell's controller has "),
+/// them" (Blazing Salvo, Lava Blister, Molten Influence) or "unless that player
+/// has [~] deal N damage to them" (Skullscorch) — the payer may take the
+/// damage instead of the primary effect.
+fn parse_unless_have_deal_damage_cost(after_unless: &str) -> Option<(AbilityCost, TargetFilter)> {
+    let (rest, payer) = alt((
+        value(
+            TargetFilter::ParentTargetController,
+            tag::<_, _, OracleError<'_>>("that creature's controller has "),
+        ),
+        value(
+            TargetFilter::ParentTargetController,
+            tag("its controller has "),
+        ),
+        value(
+            TargetFilter::ParentTargetController,
+            tag("that permanent's controller has "),
+        ),
+        value(
+            TargetFilter::ParentTargetController,
+            tag("that land's controller has "),
+        ),
+        value(
+            TargetFilter::ParentTargetController,
+            tag("that spell's controller has "),
+        ),
+        value(TargetFilter::Player, tag("that player has ")),
+        value(TargetFilter::Player, tag("that opponent has ")),
     ))
     .parse(after_unless)
     .ok()?;
@@ -24847,14 +24996,17 @@ fn parse_unless_have_deal_damage_cost(after_unless: &str) -> Option<AbilityCost>
     let (rest, _) = tag::<_, _, OracleError<'_>>(" deal ").parse(rest).ok()?;
     let (amount, tail) = super::oracle_util::parse_count_expr(rest)?;
     parse_deal_damage_to_them_tail(tail)?;
-    Some(AbilityCost::EffectCost {
-        effect: Box::new(Effect::DealDamage {
-            amount,
-            target: TargetFilter::Player,
-            damage_source: None,
-            excess: None,
-        }),
-    })
+    Some((
+        AbilityCost::EffectCost {
+            effect: Box::new(Effect::DealDamage {
+                amount,
+                target: TargetFilter::Player,
+                damage_source: None,
+                excess: None,
+            }),
+        },
+        payer,
+    ))
 }
 
 /// CR 118.12a + CR 121.3a: "unless [that object's|its] controller has you draw
@@ -24945,15 +25097,9 @@ fn extract_resolution_unless_pay_modifier(
                 );
             }
         }
-        if let Some(cost) = parse_unless_have_deal_damage_cost(after_unless_lower) {
+        if let Some((cost, payer)) = parse_unless_have_deal_damage_cost(after_unless_lower) {
             let cleaned = text[..before_unless.trim_end().len()].trim().to_string();
-            return (
-                cleaned,
-                Some(UnlessPayModifier {
-                    cost,
-                    payer: TargetFilter::ParentTargetController,
-                }),
-            );
+            return (cleaned, Some(UnlessPayModifier { cost, payer }));
         }
         if let Some(cost) = parse_unless_have_you_draw_cost(after_unless_lower) {
             let cleaned = text[..before_unless.trim_end().len()].trim().to_string();

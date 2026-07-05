@@ -27,7 +27,7 @@ use super::stickers::{AppliedSticker, StickerKind};
 use super::triggers::TriggerMode;
 use super::zones::{EtbTapState, Zone};
 use crate::game::game_object::DisplaySource;
-use crate::types::events::PlayerActionKind;
+use crate::types::events::{ClashResult, PlayerActionKind};
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -5275,6 +5275,30 @@ pub enum PlayerFilter {
         subject: AttackSubject,
         scope: AttackScope,
     },
+    /// CR 508.6 + CR 102.2 + CR 508.1b: The INVERSE combat relation of
+    /// `OpponentAttacked` — each opponent of the controller who is *attacking the
+    /// enchanted/defending player* (the player the trigger anaphors to with "that
+    /// player"), i.e. controls a creature attacking that player this combat.
+    ///
+    /// Models the Commander 2017 "whenever enchanted player is attacked, …. Each
+    /// opponent attacking that player does the same." curse cycle (Curse of
+    /// Opulence / Vitality / Verbosity / Disturbance). Per CR 508.6 a player "is
+    /// attacking [a player]" iff it controls a creature attacking that player;
+    /// combined with CR 102.2 (opponent of the controller) the affected set is
+    /// {opponents of the controller who declared a creature attacking the
+    /// enchanted player, per CR 508.1b}. Note this legitimately fans out to the
+    /// EMPTY set in a two-player game: the controller's only opponent is the
+    /// enchanted defending player, who cannot attack themselves — so the rider is
+    /// a no-op two-player-side, exactly as the CR requires.
+    ///
+    /// The anchor "that player" is the trigger's defending/enchanted player. For
+    /// the curse cycle the trigger source is an Aura attached to that player, so
+    /// the reference is resolved robustly via the source's `AttachedTo` host (the
+    /// aura source is never itself a combat attacker, so `DefendingPlayer` — which
+    /// keys on `source_id ∈ combat.attackers` — cannot resolve it). Resolved in
+    /// `game/effects/mod.rs::matches_player_scope` via
+    /// `GameState::player_attacked_player_this_combat` against that host.
+    OpponentAttackingEnchantedPlayer,
     /// All players.
     All,
     /// CR 608.2c + CR 109.4 + CR 608.2h: All non-eliminated players except those
@@ -11307,6 +11331,15 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// CR 509.1h: An effect can make an attacking creature become blocked; it
+    /// remains blocked even if all creatures blocking it are removed from combat.
+    /// CR 510.1c: a blocked creature with no creatures blocking it assigns no
+    /// combat damage. General primitive covering the ~21-card "target ... becomes
+    /// blocked" class (e.g. Dazzling Beauty).
+    BecomeBlocked {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     /// Digital-only keyword action (no CR entry): Conjure creates a card from outside
     /// the game and places it into a specified zone. Unlike tokens, conjured cards are
     /// "real" cards with full characteristics (mana value, types, abilities, etc.).
@@ -12384,6 +12417,7 @@ impl Effect {
             | Effect::SetLifeTotal { target, .. }
             | Effect::GiveControl { target, .. }
             | Effect::RemoveFromCombat { target, .. }
+            | Effect::BecomeBlocked { target, .. }
             | Effect::PutSticker { target, .. }
             | Effect::ApplySticker { target, .. }
             | Effect::ProliferateTarget { target, .. }
@@ -12917,6 +12951,7 @@ impl Effect {
             | Effect::Double { .. }
             | Effect::GiveControl { .. }
             | Effect::RemoveFromCombat { .. }
+            | Effect::BecomeBlocked { .. }
             | Effect::ChangeTargets { .. }
             | Effect::AddRestriction { .. }
             | Effect::AddTargetReplacement { .. }
@@ -13155,6 +13190,7 @@ impl Effect {
             | Effect::Double { .. }
             | Effect::GiveControl { .. }
             | Effect::RemoveFromCombat { .. }
+            | Effect::BecomeBlocked { .. }
             | Effect::ChangeTargets { .. }
             | Effect::AddRestriction { .. }
             | Effect::AddTargetReplacement { .. }
@@ -13458,6 +13494,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::SetDayNight { .. } => "SetDayNight",
         Effect::GiveControl { .. } => "GiveControl",
         Effect::RemoveFromCombat { .. } => "RemoveFromCombat",
+        Effect::BecomeBlocked { .. } => "BecomeBlocked",
         Effect::Conjure { .. } => "Conjure",
         Effect::Intensify { .. } => "Intensify",
         Effect::ApplyPerpetual { .. } => "ApplyPerpetual",
@@ -13688,6 +13725,7 @@ pub enum EffectKind {
     SetDayNight,
     GiveControl,
     RemoveFromCombat,
+    BecomeBlocked,
     Conjure,
     Intensify,
     ApplyPerpetual,
@@ -13947,6 +13985,7 @@ impl From<&Effect> for EffectKind {
             Effect::SetDayNight { .. } => EffectKind::SetDayNight,
             Effect::GiveControl { .. } => EffectKind::GiveControl,
             Effect::RemoveFromCombat { .. } => EffectKind::RemoveFromCombat,
+            Effect::BecomeBlocked { .. } => EffectKind::BecomeBlocked,
             Effect::Conjure { .. } => EffectKind::Conjure,
             Effect::Intensify { .. } => EffectKind::Intensify,
             Effect::ApplyPerpetual { .. } => EffectKind::ApplyPerpetual,
@@ -16807,6 +16846,17 @@ pub struct TriggerDefinition {
     /// mana type (the "for mana" form). Ignored by other trigger modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taps_for_mana_produced: Option<Vec<ManaType>>,
+    /// CR 701.30d + CR 603.4: Required clash outcome for "Whenever you clash and
+    /// win" triggers (Sylvan Echoes). `Some(ClashResult::Won)` narrows the trigger
+    /// so it MATCHES only when the ability's controller WON the clash — the win
+    /// requirement is checked when the clash event occurs (an intervening-if
+    /// per CR 603.4), so a lost or tied clash never creates a pending (no-op)
+    /// trigger. `None` is the plain "whenever you clash" shape (Entangling Trap)
+    /// that fires on any clash outcome. The clash sibling of `coin_flip_result`;
+    /// interpreted relative to the ability's controller, not the event's clash
+    /// controller (see `ClashResult::for_player` / `match_clash`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clash_result: Option<ClashResult>,
 }
 
 impl TriggerDefinition {
@@ -16844,6 +16894,7 @@ impl TriggerDefinition {
             coin_flip_result: None,
             die_result: None,
             taps_for_mana_produced: None,
+            clash_result: None,
         }
     }
 
@@ -19600,6 +19651,7 @@ mod tests {
             coin_flip_result: None,
             die_result: None,
             taps_for_mana_produced: None,
+            clash_result: None,
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: TriggerDefinition = serde_json::from_str(&json).unwrap();
